@@ -30,7 +30,7 @@ temporarily unavailable
 
 Use the edge version (no guarantee of stability, but latest fixes + features)
 ```
-yarn add github:WhiskeySockets/Baileys
+yarn add github:KiroFyzu/Baileys
 ```
 
 Then import your code using:
