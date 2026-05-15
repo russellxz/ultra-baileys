@@ -72,7 +72,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		appStateMacVerification,
 		shouldIgnoreJid,
 		shouldSyncHistoryMessage,
-		getMessage
+		getMessage,
+		initialSyncTimeoutMs
 	} = config
 	const sock = makeSocket(config)
 	const {
@@ -976,19 +977,21 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	/** fetch AB props */
 	const fetchProps = async () => {
-		const resultNode = await query({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				xmlns: 'abt',
-				type: 'get'
-			},
-			content: [
-				{
-					tag: 'props',
-					attrs: {
-						protocol: '1',
-						...(authState?.creds?.lastPropHash ? { hash: authState.creds.lastPropHash } : {})
+		try {
+			const resultNode = await query({
+				tag: 'iq',
+				attrs: {
+					to: S_WHATSAPP_NET,
+					xmlns: 'abt',
+					type: 'get'
+				},
+				content: [
+					{
+						tag: 'props',
+						attrs: {
+							protocol: '1',
+							...(authState?.creds?.lastPropHash ? { hash: authState.creds.lastPropHash } : {})
+						}
 					}
 				]
 			})
@@ -1006,31 +1009,25 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				props = reduceBinaryNodeToDictionary(propsNode, 'prop')
 			}
 
-			logger.debug('fetched props')
+			// Extract protocol-relevant AB props (only the ones we need)
+			const privacyTokenProp = props['10518'] ?? props['privacy_token_sending_on_all_1_on_1_messages']
+			if (privacyTokenProp !== undefined) {
+				serverProps.privacyTokenOn1to1 = privacyTokenProp === 'true' || privacyTokenProp === '1'
+			}
 
-			return props
-		}
+			const profilePicProp = props['9666'] ?? props['profile_scraping_privacy_token_in_photo_iq']
+			if (profilePicProp !== undefined) {
+				serverProps.profilePicPrivacyToken = profilePicProp === 'true' || profilePicProp === '1'
+			}
 
-		// Extract protocol-relevant AB props (only the ones we need)
-		const privacyTokenProp = props['10518'] ?? props['privacy_token_sending_on_all_1_on_1_messages']
-		if (privacyTokenProp !== undefined) {
-			serverProps.privacyTokenOn1to1 = privacyTokenProp === 'true' || privacyTokenProp === '1'
-		}
+			const lidIssueProp = props['14303'] ?? props['lid_trusted_token_issue_to_lid']
+			if (lidIssueProp !== undefined) {
+				serverProps.lidTrustedTokenIssueToLid = lidIssueProp === 'true' || lidIssueProp === '1'
+			}
 
-		const profilePicProp = props['9666'] ?? props['profile_scraping_privacy_token_in_photo_iq']
-		if (profilePicProp !== undefined) {
-			serverProps.profilePicPrivacyToken = profilePicProp === 'true' || profilePicProp === '1'
-		}
-
-		const lidIssueProp = props['14303'] ?? props['lid_trusted_token_issue_to_lid']
-		if (lidIssueProp !== undefined) {
-			serverProps.lidTrustedTokenIssueToLid = lidIssueProp === 'true' || lidIssueProp === '1'
-		}
-
-		logger.debug({ serverProps }, 'fetched props')
-
+			logger.debug({ serverProps }, 'fetched props')
+		} catch (error) {
 			logger.warn({ err: error }, 'fetchProps failed, continuing without props')
-			return {}
 		}
 	}
 
@@ -1447,7 +1444,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
 			}
-		}, syncTimeoutMs)
+		}, initialSyncTimeoutMs)
 	})
 
 	// When an app state sync key arrives (myAppStateKeyId is set) and there are
