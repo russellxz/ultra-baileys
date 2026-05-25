@@ -91,9 +91,23 @@ export const makeSocket = (config: SocketConfig) => {
 		? Math.round(defaultQueryTimeoutMs * proxyMultiplier)
 		: defaultQueryTimeoutMs
 
-	/** Circuit breaker: track consecutive timeouts */
+	/** Circuit breaker: track consecutive timeout incidents */
 	let consecutiveTimeouts = 0
 	const maxConsecutiveTimeouts = config.maxConsecutiveTimeouts ?? 3
+	/**
+	 * Timestamp of the last timeout increment.
+	 * Used to deduplicate concurrent query timeouts: multiple queries started together
+	 * all fire at the same moment and must count as one incident, not N separate ones.
+	 */
+	let lastTimeoutAt = 0
+	/**
+	 * Dedup window: timeouts that arrive within this many ms of each other are treated
+	 * as the same network incident and collapsed into a single consecutive-timeout count.
+	 * 500 ms is safely larger than the μs-level jitter between co-started query timers
+	 * yet far smaller than any realistic query timeout (≥ 5 s), so sequential genuine
+	 * timeouts are always counted individually.
+	 */
+	const TIMEOUT_DEDUP_WINDOW_MS = 500
 
 	const publicWAMBuffer = new BinaryInfo()
 
@@ -182,6 +196,7 @@ export const makeSocket = (config: SocketConfig) => {
 			const result = await promiseTimeout<T>(timeoutMs, (resolve, reject) => {
 				onRecv = data => {
 					consecutiveTimeouts = 0
+					lastTimeoutAt = 0
 					resolve(data)
 				}
 
@@ -204,23 +219,27 @@ export const makeSocket = (config: SocketConfig) => {
 		} catch (error) {
 			// Catch timeout and return undefined instead of throwing
 			if (error instanceof Boom && error.output?.statusCode === DisconnectReason.timedOut) {
-				consecutiveTimeouts++
-				logger?.warn?.(
-					{ msgId, consecutiveTimeouts, useProxy, timeoutMs },
-					'timed out waiting for message'
-				)
+				const now = Date.now()
+				// Deduplicate: concurrent queries started together all timeout within a few
+				// milliseconds of each other. Only the first timeout in the window increments
+				// the counter so that one network incident counts as one, not N.
+				if (now - lastTimeoutAt > TIMEOUT_DEDUP_WINDOW_MS) {
+					consecutiveTimeouts++
+					lastTimeoutAt = now
+					logger?.warn?.({ msgId, consecutiveTimeouts, useProxy, timeoutMs }, 'timed out waiting for message')
 
-				// Circuit breaker: if too many consecutive timeouts, force reconnection
-				if (maxConsecutiveTimeouts > 0 && consecutiveTimeouts >= maxConsecutiveTimeouts) {
-					logger?.error?.(
-						{ consecutiveTimeouts, maxConsecutiveTimeouts },
-						'circuit breaker triggered: too many consecutive timeouts, closing connection'
-					)
-					void end(
-						new Boom('Too many consecutive timeouts', {
-							statusCode: DisconnectReason.connectionLost
-						})
-					)
+					// Circuit breaker: if too many consecutive timeouts, force reconnection
+					if (maxConsecutiveTimeouts > 0 && consecutiveTimeouts >= maxConsecutiveTimeouts) {
+						logger?.error?.(
+							{ consecutiveTimeouts, maxConsecutiveTimeouts },
+							'circuit breaker triggered: too many consecutive timeouts, closing connection'
+						)
+						void end(
+							new Boom('Too many consecutive timeouts', {
+								statusCode: DisconnectReason.connectionLost
+							})
+						)
+					}
 				}
 
 				return undefined
