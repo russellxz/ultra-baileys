@@ -1,5 +1,5 @@
 import { promisify } from 'util'
-import { inflate } from 'zlib'
+import { inflateSync, inflate } from 'zlib'
 import * as constants from './constants'
 import { jidEncode, type JidServer, WAJIDDomains } from './jid-utils'
 import type { BinaryNode, BinaryNodeCodingOptions } from './types'
@@ -8,7 +8,7 @@ const inflatePromise = promisify(inflate)
 
 export const decompressingIfRequired = async (buffer: Buffer) => {
 	if (2 & buffer.readUInt8()) {
-		buffer = await inflatePromise(buffer.subarray(1))
+		buffer = inflateSync(buffer.subarray(1))
 	} else {
 		// nodes with no compression have a 0x00 prefix, we remove that
 		buffer = buffer.subarray(1)
