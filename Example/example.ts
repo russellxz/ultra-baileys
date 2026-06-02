@@ -146,7 +146,10 @@ const startSock = async() => {
 
               // go to an old chat and send this
               if (text == "onDemandHistSync") {
-                const messageId = await sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp!)
+                // proto field is `oldestMsgTimestampMs` (ms) but `messageTimestamp` is seconds
+                const tsRaw = msg.messageTimestamp!
+                const tsMs = (typeof tsRaw === 'number' ? tsRaw : tsRaw.toNumber()) * 1000
+                const messageId = await sock.fetchMessageHistory(50, msg.key, tsMs)
                 logger.debug({ id: messageId }, 'requested on-demand history resync')
               }
 
