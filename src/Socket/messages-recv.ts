@@ -964,7 +964,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		if (lidPnMappings.length) {
-			await signalRepository.lidMapping.storeLIDPNMappings(lidPnMappings)
+			await signalRepository.lidMapping
+				.storeLIDPNMappings(lidPnMappings)
+				.catch(err =>
+					logger.warn({ err, count: lidPnMappings.length }, 'failed to store LID-PN mappings from group notification')
+				)
 		}
 	}
 
