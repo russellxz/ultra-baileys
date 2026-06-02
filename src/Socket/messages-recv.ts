@@ -12,6 +12,7 @@ import {
 } from '../Defaults'
 import type {
 	GroupParticipant,
+	LIDMapping,
 	MessageReceiptType,
 	MessageRelayOptions,
 	MessageUserReceipt,
@@ -798,12 +799,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const handleGroupNotification = (fullNode: BinaryNode, child: BinaryNode, msg: Partial<WAMessage>) => {
-		// TODO: Support PN/LID (Here is only LID now)
-
+	const handleGroupNotification = async (fullNode: BinaryNode, child: BinaryNode, msg: Partial<WAMessage>) => {
+		const lidPnMappings: LIDMapping[] = []
 		const actingParticipantLid = fullNode.attrs.participant
 		const actingParticipantPn = fullNode.attrs.participant_pn
 		const actingParticipantUsername = fullNode.attrs.participant_username
+		if (
+			actingParticipantLid &&
+			actingParticipantPn &&
+			isLidUser(actingParticipantLid) &&
+			isPnUser(actingParticipantPn)
+		) {
+			lidPnMappings.push({ lid: actingParticipantLid, pn: actingParticipantPn })
+		}
 
 		const affectedParticipantLid = getBinaryNodeChild(child, 'participant')?.attrs?.jid || actingParticipantLid!
 		const affectedParticipantPn = getBinaryNodeChild(child, 'participant')?.attrs?.phone_number || actingParticipantPn!
@@ -815,6 +823,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg.messageStubType = WAMessageStubType.GROUP_CREATE
 				msg.messageStubParameters = [metadata.subject]
 				msg.key = { participant: metadata.owner, participantAlt: metadata.ownerPn }
+				if (metadata.owner && metadata.ownerPn && isLidUser(metadata.owner) && isPnUser(metadata.ownerPn)) {
+					lidPnMappings.push({ lid: metadata.owner, pn: metadata.ownerPn })
+				}
 
 				ev.emit('chats.upsert', [
 					{
@@ -855,11 +866,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg.messageStubType = WAMessageStubType[stubType as keyof typeof WAMessageStubType]
 
 				const participants = getBinaryNodeChildren(child, 'participant').map(({ attrs }) => {
-					// TODO: Store LID MAPPINGS
+					const participantJid = attrs.jid
+					const phoneNumber = isLidUser(participantJid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined
+					const lid = isPnUser(participantJid) && isLidUser(attrs.lid) ? attrs.lid : undefined
+
+					if (participantJid && phoneNumber) {
+						lidPnMappings.push({ lid: participantJid, pn: phoneNumber })
+					} else if (participantJid && lid) {
+						lidPnMappings.push({ lid, pn: participantJid })
+					}
+
 					return {
-						id: attrs.jid!,
-						phoneNumber: isLidUser(attrs.jid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined,
-						lid: isPnUser(attrs.jid) && isLidUser(attrs.lid) ? attrs.lid : undefined,
+						id: participantJid!,
+						phoneNumber,
+						lid,
 						username: attrs.participant_username || attrs.username || undefined,
 						admin: (attrs.type || null) as GroupParticipant['admin']
 					}
@@ -919,6 +939,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'created_membership_requests':
 				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+				if (isLidUser(affectedParticipantLid) && isPnUser(affectedParticipantPn)) {
+					lidPnMappings.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
+				}
+
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipantPn }),
 					'created',
@@ -927,13 +951,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'revoked_membership_requests':
 				const isDenied = areJidsSameUser(affectedParticipantLid, actingParticipantLid)
-				// TODO: LIDMAPPING SUPPORT
 				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+				if (isLidUser(affectedParticipantLid) && isPnUser(affectedParticipantPn)) {
+					lidPnMappings.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
+				}
+
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipantPn }),
 					isDenied ? 'revoked' : 'rejected'
 				]
 				break
+		}
+
+		if (lidPnMappings.length) {
+			await signalRepository.lidMapping.storeLIDPNMappings(lidPnMappings)
 		}
 	}
 
@@ -1046,8 +1077,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				await handleMexNotification(node)
 				break
 			case 'w:gp2':
-				// TODO: HANDLE PARTICIPANT_PN
-				handleGroupNotification(node, child!, result)
+				await handleGroupNotification(node, child!, result)
 				break
 			case 'mediaretry':
 				const event = decodeMediaRetryNode(node)
