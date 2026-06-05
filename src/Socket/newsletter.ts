@@ -1,8 +1,9 @@
+import { proto } from '../../WAProto/index.js'
 import type { NewsletterCreateResponse, SocketConfig, WAMediaUpload } from '../Types'
 import type { NewsletterMetadata, NewsletterUpdate } from '../Types'
 import { QueryIds, XWAPaths } from '../Types'
 import { generateProfilePicture } from '../Utils/messages-media'
-import { getBinaryNodeChild } from '../WABinary'
+import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, S_WHATSAPP_NET } from '../WABinary'
 import { makeGroupsSocket } from './groups'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 
@@ -30,15 +31,80 @@ const parseNewsletterMetadata = (result: unknown): NewsletterMetadata | null => 
 		return null
 	}
 
-	if ('id' in result && typeof result.id === 'string') {
-		return result as NewsletterMetadata
+	const raw = result as Record<string, unknown>
+	const node = (raw.result && typeof raw.result === 'object' ? raw.result : raw) as Record<string, any>
+
+	if (typeof node.id !== 'string') {
+		return null
 	}
 
-	if ('result' in result && typeof result.result === 'object' && result.result !== null && 'id' in result.result) {
-		return result.result as NewsletterMetadata
+	const thread = node.thread_metadata ?? {}
+	const viewer = node.viewer_metadata ?? {}
+	const pic = thread.picture ?? thread.image ?? thread.preview
+
+	return {
+		id: node.id,
+		name: thread.name?.text ?? '',
+		description: thread.description?.text,
+		invite: thread.invite,
+		creation_time: thread.creation_time ? parseInt(thread.creation_time, 10) : undefined,
+		subscribers: thread.subscribers_count ? parseInt(thread.subscribers_count, 10) : undefined,
+		picture: pic ? { id: pic.id, directPath: pic.direct_path } : undefined,
+		verification: thread.verification,
+		mute_state: viewer.mute
+	}
+}
+
+const parseFetchedNewsletterMessage = (node: BinaryNode) => {
+	const plaintext = getBinaryNodeChild(node, 'plaintext')
+	const plaintextContent = plaintext?.content
+	const meta = getBinaryNodeChild(node, 'meta')
+	const viewsCount = getBinaryNodeChild(node, 'views_count')
+	const forwardsCount = getBinaryNodeChild(node, 'forwards_count')
+	const responsesCount = getBinaryNodeChild(node, 'responses_count')
+	const rcat = getBinaryNodeChild(node, 'rcat')
+
+	const reactionsNode = getBinaryNodeChild(node, 'reactions')
+	const reactions = reactionsNode
+		? getBinaryNodeChildren(reactionsNode, 'reaction').map(r => ({
+				code: r.attrs.code,
+				count: r.attrs.count ? parseInt(r.attrs.count, 10) : 0
+			}))
+		: []
+
+	const votesNode = getBinaryNodeChild(node, 'votes')
+	const pollVotes = votesNode
+		? getBinaryNodeChildren(votesNode, 'vote').map(v => ({
+				count: v.attrs.count ? parseInt(v.attrs.count, 10) : 0,
+				hash: v.content instanceof Uint8Array ? v.content : undefined
+			}))
+		: []
+
+	let message: proto.IMessage | undefined
+	if (plaintextContent instanceof Uint8Array) {
+		try {
+			message = proto.Message.decode(plaintextContent)
+		} catch {
+			message = undefined
+		}
 	}
 
-	return null
+	return {
+		id: node.attrs.id,
+		serverId: node.attrs.server_id,
+		type: node.attrs.type,
+		timestamp: node.attrs.t ? parseInt(node.attrs.t, 10) : undefined,
+		isSender: node.attrs.is_sender === 'true',
+		views: viewsCount?.attrs?.count ? parseInt(viewsCount.attrs.count, 10) : undefined,
+		forwards: forwardsCount?.attrs?.count ? parseInt(forwardsCount.attrs.count, 10) : undefined,
+		responses: responsesCount?.attrs?.count ? parseInt(responsesCount.attrs.count, 10) : undefined,
+		editTimestamp: meta?.attrs?.msg_edit_t ? parseInt(meta.attrs.msg_edit_t, 10) : undefined,
+		originalTimestamp: meta?.attrs?.original_msg_t ? parseInt(meta.attrs.original_msg_t, 10) : undefined,
+		mediaRcat: rcat?.content instanceof Uint8Array ? rcat.content : undefined,
+		reactions,
+		pollVotes,
+		message
+	}
 }
 
 export const makeNewsletterSocket = (config: SocketConfig) => {
@@ -154,15 +220,17 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 		},
 
 		newsletterFetchMessages: async (jid: string, count: number, since: number, after: number) => {
-			const messageUpdateAttrs: { count: string; since?: string; after?: string } = {
+			const messagesAttrs: { type: string; jid: string; count: string; before?: string; after?: string } = {
+				type: 'jid',
+				jid,
 				count: count.toString()
 			}
-			if (typeof since === 'number') {
-				messageUpdateAttrs.since = since.toString()
+			if (typeof since === 'number' && since) {
+				messagesAttrs.before = since.toString()
 			}
 
 			if (after) {
-				messageUpdateAttrs.after = after.toString()
+				messagesAttrs.after = after.toString()
 			}
 
 			const result = await query({
@@ -170,17 +238,19 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 				attrs: {
 					id: generateMessageTag(),
 					type: 'get',
-					xmlns: 'newsletter',
-					to: jid
+					to: S_WHATSAPP_NET,
+					xmlns: 'newsletter'
 				},
 				content: [
 					{
-						tag: 'message_updates',
-						attrs: messageUpdateAttrs
+						tag: 'messages',
+						attrs: messagesAttrs
 					}
 				]
 			})
-			return result
+
+			const messagesNode = getBinaryNodeChild(result, 'messages')
+			return getBinaryNodeChildren(messagesNode, 'message').map(parseFetchedNewsletterMessage)
 		},
 
 		subscribeNewsletterUpdates: async (jid: string): Promise<{ duration: string } | null> => {
