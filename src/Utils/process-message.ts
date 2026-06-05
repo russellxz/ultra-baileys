@@ -189,11 +189,17 @@ export function decryptPollVote(
 }
 
 /**
- * Decrypt a poll vote with automatic LID/PN JID fallback handling.
+ * Decrypt a poll vote message using deterministic JID resolution based on addressing mode.
  *
  * WhatsApp's migration from Phone Number (PN) JIDs to Local Identifier (LID) JIDs
- * means both formats can appear in messages. This utility tries all combinations
- * of creator and voter JIDs until decryption succeeds, handling mixed PN/LID scenarios.
+ * means both formats can appear in messages. This utility uses the `addressingMode`
+ * to determine which JID format to use for decryption, avoiding trial-and-error.
+ *
+ * JID resolution logic:
+ * - **LID mode** (`addressingMode === 'lid'`):
+ *   - Creator JID: If `pollCreationMsgKey.fromMe` → use `meLidNormalised`; else use `participant` if it's a LID user, or fall back to PN
+ *   - Voter JID: If `voteMsgKey.fromMe` → use `meLidNormalised`; else use `participant` if it's a LID user, or fall back to PN
+ * - **PN mode** (otherwise): Uses `getKeyAuthor()` for both creator and voter
  *
  * @param encryptedVote - The encrypted poll vote from pollUpdateMessage.vote
  * @param opts - Decryption options
@@ -202,7 +208,9 @@ export function decryptPollVote(
  * @param opts.voteMsgKey - Message key of the vote message
  * @param opts.meId - Normalized user ID (phone number format)
  * @param opts.meLid - Optional normalized LID for the current user
- * @returns Decrypted poll vote message, or undefined if decryption fails with all JID combinations
+ * @param opts.addressingMode - Addressing mode from the message key ('lid' or 'pn')
+ * @returns Decrypted poll vote message
+ * @throws Error if decryption fails
  *
  * @example
  * ```ts
@@ -210,11 +218,11 @@ export function decryptPollVote(
  * sock.ev.on('messages.upsert', async ({ messages }) => {
  *   for (const msg of messages) {
  *     const pollUpdate = msg.message?.pollUpdateMessage
- *     if (pollUpdate) {
+ *     if (pollUpdate && sock.user) {
  *       const pollCreationMsg = await getMessage(pollUpdate.pollCreationMessageKey)
  *       if (pollCreationMsg) {
  *         const pollEncKey = pollCreationMsg.messageContextInfo?.messageSecret
- *         if (pollEncKey) {
+ *         if (pollEncKey && pollUpdate.vote) {
  *           const decrypted = decryptPollVoteWithLidFallback(
  *             pollUpdate.vote,
  *             {
@@ -222,23 +230,22 @@ export function decryptPollVote(
  *               pollCreationMsgKey: pollUpdate.pollCreationMessageKey,
  *               voteMsgKey: msg.key,
  *               meId: sock.user.id,
- *               meLid: sock.user.lid
+ *               meLid: sock.user.lid,
+ *               addressingMode: msg.key.addressingMode
  *             }
  *           )
- *           if (decrypted) {
- *             console.log('Poll vote options:', decrypted.selectedOptions)
- *             // Emit messages.update with the decrypted vote
- *             sock.ev.emit('messages.update', [{
- *               key: pollUpdate.pollCreationMessageKey,
- *               update: {
- *                 pollUpdates: [{
- *                   pollUpdateMessageKey: msg.key,
- *                   vote: decrypted,
- *                   senderTimestampMs: pollUpdate.senderTimestampMs
- *                 }]
- *               }
- *             }])
- *           }
+ *           console.log('Poll vote options:', decrypted.selectedOptions)
+ *           // Emit messages.update with the decrypted vote
+ *           sock.ev.emit('messages.update', [{
+ *             key: pollUpdate.pollCreationMessageKey,
+ *             update: {
+ *               pollUpdates: [{
+ *                 pollUpdateMessageKey: msg.key,
+ *                 vote: decrypted,
+ *                 senderTimestampMs: pollUpdate.senderTimestampMs
+ *               }]
+ *             }
+ *           }])
  *         }
  *       }
  *     }
@@ -246,7 +253,7 @@ export function decryptPollVote(
  * })
  * ```
  *
- * @author Based on contributions by @smoojs16 (candidate JID approach)
+ * @author Based on contributions by @smoojs16 (candidate JID approach) and @CSFelix (addressingMode approach)
  */
 export function decryptPollVoteWithLidFallback(
 	encryptedVote: proto.Message.IPollEncValue,
@@ -256,62 +263,50 @@ export function decryptPollVoteWithLidFallback(
 		voteMsgKey: WAMessageKey
 		meId: string
 		meLid?: string
+		addressingMode?: string
 	}
-): proto.Message.PollVoteMessage | undefined {
-	const { pollEncKey, pollCreationMsgKey, voteMsgKey, meId, meLid } = opts
+): proto.Message.PollVoteMessage {
+	const { pollEncKey, pollCreationMsgKey, voteMsgKey, meId, meLid, addressingMode } = opts
 
 	const meIdNormalised = jidNormalizedUser(meId)
 	const meLidNormalised = meLid ? jidNormalizedUser(meLid) : undefined
 
-	// Build JID candidates for poll creator (both PN and LID formats)
-	const creatorPnJid = getKeyAuthor(pollCreationMsgKey, meIdNormalised)
-	const creatorLidJid = pollCreationMsgKey.fromMe && meLidNormalised
-		? meLidNormalised
-		: (pollCreationMsgKey.participant && isLidUser(pollCreationMsgKey.participant)
-			? jidNormalizedUser(pollCreationMsgKey.participant)
-			: ((pollCreationMsgKey as any).participantAlt && isLidUser((pollCreationMsgKey as any).participantAlt)
-				? jidNormalizedUser((pollCreationMsgKey as any).participantAlt)
-				: undefined))
-	const creatorCandidates = [creatorPnJid]
-	if (creatorLidJid && creatorLidJid !== creatorPnJid) {
-		creatorCandidates.push(creatorLidJid)
+	let pollCreatorJid: string
+	let voterJid: string
+
+	if (addressingMode === 'lid') {
+		// LID mode: resolve both creator and voter to LID format
+		pollCreatorJid = pollCreationMsgKey.fromMe && meLidNormalised
+			? meLidNormalised
+			: (pollCreationMsgKey.participant && isLidUser(pollCreationMsgKey.participant)
+				? jidNormalizedUser(pollCreationMsgKey.participant)
+				: ((pollCreationMsgKey as any).participantAlt && isLidUser((pollCreationMsgKey as any).participantAlt)
+					? jidNormalizedUser((pollCreationMsgKey as any).participantAlt)
+					: getKeyAuthor(pollCreationMsgKey, meIdNormalised)))
+
+		voterJid = voteMsgKey.fromMe && meLidNormalised
+			? meLidNormalised
+			: (voteMsgKey.participant && isLidUser(voteMsgKey.participant)
+				? jidNormalizedUser(voteMsgKey.participant)
+				: ((voteMsgKey as any).participantAlt && isLidUser((voteMsgKey as any).participantAlt)
+					? jidNormalizedUser((voteMsgKey as any).participantAlt)
+					: getKeyAuthor(voteMsgKey, meIdNormalised)))
+	} else {
+		// PN mode or unknown: use standard PN JID resolution
+		pollCreatorJid = getKeyAuthor(pollCreationMsgKey, meIdNormalised)
+		voterJid = getKeyAuthor(voteMsgKey, meIdNormalised)
 	}
 
-	// Build JID candidates for voter (both PN and LID formats)
-	const voterPnJid = getKeyAuthor(voteMsgKey, meIdNormalised)
-	const voterLidJid = voteMsgKey.fromMe && meLidNormalised
-		? meLidNormalised
-		: (voteMsgKey.participant && isLidUser(voteMsgKey.participant)
-			? jidNormalizedUser(voteMsgKey.participant)
-			: ((voteMsgKey as any).participantAlt && isLidUser((voteMsgKey as any).participantAlt)
-				? jidNormalizedUser((voteMsgKey as any).participantAlt)
-				: undefined))
-	const voterCandidates = [voterPnJid]
-	if (voterLidJid && voterLidJid !== voterPnJid) {
-		voterCandidates.push(voterLidJid)
-	}
-
-	// Try all combinations of creator and voter JIDs until decryption succeeds
-	for (const pollCreatorJid of creatorCandidates) {
-		for (const voterJid of voterCandidates) {
-			try {
-				return decryptPollVote(
-					encryptedVote,
-					{
-						pollEncKey,
-						pollCreatorJid,
-						pollMsgId: pollCreationMsgKey.id!,
-						voterJid,
-					}
-				)
-			} catch(err) {
-				// Try next combination
-			}
+	// Call decryptPollVote once with resolved JIDs - let errors propagate
+	return decryptPollVote(
+		encryptedVote,
+		{
+			pollEncKey,
+			pollCreatorJid,
+			pollMsgId: pollCreationMsgKey.id!,
+			voterJid,
 		}
-	}
-
-	// All combinations failed
-	return undefined
+	)
 }
 
 /**

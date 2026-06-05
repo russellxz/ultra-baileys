@@ -384,7 +384,7 @@ import { decryptPollVoteWithLidFallback } from '@whiskeysockets/baileys'
 sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
         const pollUpdate = msg.message?.pollUpdateMessage
-        if (pollUpdate) {
+        if (pollUpdate && pollUpdate.vote && sock.user) {
             // Fetch the poll creation message using your getMessage store implementation
             const pollCreationMsg = await getMessage(pollUpdate.pollCreationMessageKey)
             if (pollCreationMsg) {
@@ -398,25 +398,25 @@ sock.ev.on('messages.upsert', async ({ messages }) => {
                             pollCreationMsgKey: pollUpdate.pollCreationMessageKey,
                             voteMsgKey: msg.key,
                             meId: sock.user.id,
-                            meLid: sock.user.lid
+                            meLid: sock.user.lid,
+                            addressingMode: msg.key.addressingMode
                         }
                     )
                     
-                    if (decrypted) {
-                        console.log('Poll vote options:', decrypted.selectedOptions)
-                        
-                        // Emit messages.update with the decrypted vote
-                        sock.ev.emit('messages.update', [{
-                            key: pollUpdate.pollCreationMessageKey,
-                            update: {
-                                pollUpdates: [{
-                                    pollUpdateMessageKey: msg.key,
-                                    vote: decrypted,
-                                    senderTimestampMs: pollUpdate.senderTimestampMs
-                                }]
-                            }
-                        }])
-                    }
+                    console.log('Poll vote options:', decrypted.selectedOptions)
+                    
+                    // Emit messages.update with the decrypted vote
+                    sock.ev.emit('messages.update', [{
+                        key: pollUpdate.pollCreationMessageKey,
+                        update: {
+                            pollUpdates: [{
+                                pollUpdateMessageKey: msg.key,
+                                vote: decrypted,
+                                senderTimestampMs: pollUpdate.senderTimestampMs
+                            }]
+                        }
+                    }])
+                }
                 }
             }
         }
