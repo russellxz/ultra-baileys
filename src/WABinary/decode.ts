@@ -90,12 +90,8 @@ class ByteDecoder {
 
 	private readInt(n: number, littleEndian = false): number {
 		this.checkEOS(n)
-		let val = 0
-		for (let i = 0; i < n; i++) {
-			const shift = littleEndian ? i : n - 1 - i
-			val |= this.next() << (shift * 8)
-		}
-
+		const val = littleEndian ? this.buffer.readUIntLE(this.index, n) : this.buffer.readUIntBE(this.index, n)
+		this.index += n
 		return val
 	}
 
