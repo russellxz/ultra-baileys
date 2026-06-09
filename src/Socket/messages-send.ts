@@ -533,6 +533,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return msgId
 	}
 
+	const limit = pLimit({ concurrency: 10 }) // limit concurrent encryptions to prevent resource exhaustion
+
 	const createParticipantNodes = async (
 		recipientJids: string[],
 		message: proto.IMessage,
@@ -552,8 +554,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
-
-		const limit = pLimit({ concurrency: 10 }) // limit concurrent encryptions to prevent resource exhaustion
 
 		const encryptionPromises = (patchedMessages as any).map(
 			limit(async ({ recipientJid: jid, message: patchedMessage }: any) => {
