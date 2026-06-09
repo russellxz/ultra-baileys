@@ -1185,9 +1185,9 @@ await sock.updateDefaultDisappearingMode(ephemeral)
 ## Broadcast Lists & Stories
 
 ### Send Broadcast & Stories
-Messages can be sent to broadcasts & stories using `sendMessage` with `statusJidList` in the options.
+Messages can be sent to broadcasts & stories using `sendMessage`.
 
-> **Note:** For stories, use `status@broadcast` as the JID. `statusJidList` must contain the list of contacts who will receive the status.
+> **Note:** For stories, use `status@broadcast` as the JID. `statusJidList` is required for stories — it must contain the list of contacts who will receive the status update. For broadcast lists, use the broadcast list JID (e.g. `12345678@broadcast`) instead.
 
 #### Text Status
 ```ts
@@ -1246,7 +1246,7 @@ await sock.sendMessage(
 await sock.sendMessage(
     'status@broadcast',
     {
-        audio: fs.readFileSync('./audio.ogg'),
+        audio: { url: './audio.ogg' }, // or use Buffer: { audio: fs.readFileSync('./audio.ogg') }
         mimetype: 'audio/ogg; codecs=opus',
         ptt: true  // required for audio status to appear on mobile
     },
