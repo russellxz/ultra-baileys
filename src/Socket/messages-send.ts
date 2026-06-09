@@ -69,6 +69,7 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
+import pLimit from 'p-limit'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -552,8 +553,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
 
+		const limit = pLimit({ concurrency: 10 }) // limit concurrent encryptions to prevent resource exhaustion
+
 		const encryptionPromises = (patchedMessages as any).map(
-			async ({ recipientJid: jid, message: patchedMessage }: any) => {
+			limit(async ({ recipientJid: jid, message: patchedMessage }: any) => {
 				try {
 					if (!jid) return null
 
@@ -601,7 +604,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					logger.error({ jid, err }, 'Failed to encrypt for recipient')
 					return null
 				}
-			}
+			}, {})
 		)
 
 		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null) as BinaryNode[]
