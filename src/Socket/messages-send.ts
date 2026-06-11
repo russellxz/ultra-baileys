@@ -69,6 +69,7 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
+import { yieldEventLoop } from '../Utils/yield-event-loop'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -559,6 +560,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			try {
 				if (!jid) continue
 
+				await yieldEventLoop()
 				let msgToEncrypt = patchedMessage
 
 				if (dsmMessage) {
