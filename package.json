@@ -47,7 +47,6 @@
     "libsignal": "^6.0.0",
     "lru-cache": "^11.1.0",
     "music-metadata": "^11.12.3",
-    "p-limit": "^7.3.0",
     "p-queue": "^9.0.0",
     "pino": "^9.6",
     "protobufjs": "^7.5.6",

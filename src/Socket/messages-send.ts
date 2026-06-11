@@ -69,7 +69,6 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
-import pLimit from 'p-limit'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
