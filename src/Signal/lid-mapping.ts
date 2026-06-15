@@ -4,9 +4,12 @@ import type { ILogger } from '../Utils/logger'
 import { isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary'
 
 export class LIDMappingStore {
+	// PATCH: `max` bounds the cache and `ttlAutopurge: false` drops the per-entry
+	// 3-day timer (TTL is checked lazily on get); evicted entries fall back to the DB.
 	private readonly mappingCache = new LRUCache<string, string>({
-		ttl: 3 * 24 * 60 * 60 * 1000, // 7 days
-		ttlAutopurge: true,
+		max: 10000,
+		ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
+		ttlAutopurge: false,
 		updateAgeOnGet: true
 	})
 	private readonly keys: SignalKeyStoreWithTransaction
