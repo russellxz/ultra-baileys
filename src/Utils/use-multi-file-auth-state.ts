@@ -1,26 +1,29 @@
-import { Mutex } from 'async-mutex'
-import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
+import { makeKeyedMutex } from './make-mutex'
 
 // We need to lock files due to the fact that we are using async functions to read and write files
 // https://github.com/WhiskeySockets/Baileys/issues/794
 // https://github.com/nodejs/node/issues/26338
-// Use a Map to store mutexes for each file path
-const fileLocks = new Map<string, Mutex>()
+// Keyed mutex: serializes access per file path and ref-counts its entries, so an
+// idle path is freed instead of leaking a Mutex per key file for the process' life.
+const fileMutex = makeKeyedMutex()
 
-// Get or create a mutex for a specific file path
-const getFileLock = (path: string): Mutex => {
-	let mutex = fileLocks.get(path)
-	if (!mutex) {
-		mutex = new Mutex()
-		fileLocks.set(path, mutex)
+// PATCH: a stuck fs op leaks its FSReqPromise/Promise forever (heap → OOM).
+// Wrap each read/write in AbortController+timeout so the stuck one is aborted and freed.
+const FS_TIMEOUT_MS = 15000
+const withFsTimeout = async <T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+	const ac = new AbortController()
+	const timer = setTimeout(() => ac.abort(), FS_TIMEOUT_MS)
+	try {
+		return await run(ac.signal)
+	} finally {
+		clearTimeout(timer)
 	}
-
-	return mutex
 }
 
 /**
@@ -36,13 +39,16 @@ export const useMultiFileAuthState = async (
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const writeData = async (data: any, file: string) => {
 		const filePath = join(folder, fixFileName(file)!)
-		const mutex = getFileLock(filePath)
 
-		return mutex.acquire().then(async release => {
+		return fileMutex.mutex(filePath, async () => {
+			// PATCH: atomic write (tmp + rename) with timeout. An abort mid-write
+			const tmpPath = `${filePath}.tmp`
 			try {
-				await writeFile(filePath, JSON.stringify(data, BufferJSON.replacer))
-			} finally {
-				release()
+				await withFsTimeout(signal => writeFile(tmpPath, JSON.stringify(data, BufferJSON.replacer), { signal }))
+				await rename(tmpPath, filePath)
+			} catch (error) {
+				await unlink(tmpPath).catch(() => {})
+				throw error
 			}
 		})
 	}
@@ -50,15 +56,11 @@ export const useMultiFileAuthState = async (
 	const readData = async (file: string) => {
 		try {
 			const filePath = join(folder, fixFileName(file)!)
-			const mutex = getFileLock(filePath)
 
-			return await mutex.acquire().then(async release => {
-				try {
-					const data = await readFile(filePath, { encoding: 'utf-8' })
-					return JSON.parse(data, BufferJSON.reviver)
-				} finally {
-					release()
-				}
+			return await fileMutex.mutex(filePath, async () => {
+				// PATCH: timeout via signal — a stuck readFile is aborted.
+				const data = await withFsTimeout<string>(signal => readFile(filePath, { encoding: 'utf-8', signal }))
+				return JSON.parse(data, BufferJSON.reviver)
 			})
 		} catch (error) {
 			return null
@@ -68,15 +70,11 @@ export const useMultiFileAuthState = async (
 	const removeData = async (file: string) => {
 		try {
 			const filePath = join(folder, fixFileName(file)!)
-			const mutex = getFileLock(filePath)
 
-			return mutex.acquire().then(async release => {
+			return fileMutex.mutex(filePath, async () => {
 				try {
 					await unlink(filePath)
-				} catch {
-				} finally {
-					release()
-				}
+				} catch {}
 			})
 		} catch {}
 	}
