@@ -7,6 +7,7 @@ import {
 	ProtocolAddress,
 	SenderKeyDistributionMessage,
 	SenderKeyName,
+	SenderKeyRecord,
 	SessionBuilder,
 	SessionCipher,
 	SessionRecord,
@@ -70,6 +71,18 @@ export function makeLibSignalRepository(
 		ttlAutopurge: true,
 		updateAgeOnGet: true
 	})
+
+	const ensureSenderKeyAndCreateSkdm = async (group: string, meId: string) => {
+		const senderName = jidToSignalSenderKeyName(group, meId)
+		const senderNameStr = senderName.toString()
+		const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
+		if (!senderKey) {
+			await storage.storeSenderKey(senderNameStr, new SenderKeyRecord().serialize())
+		}
+
+		const skdm = await new GroupSessionBuilder(storage).create(senderName)
+		return { senderName, skdm }
+	}
 
 	const repository: SignalRepositoryWithLIDStore = {
 		decryptGroupMessage({ group, authorJid, msg }) {
@@ -146,29 +159,53 @@ export function makeLibSignalRepository(
 		},
 
 		async encryptGroupMessage({ group, meId, data }) {
-			const builder = new GroupSessionBuilder(storage)
-			const meAddr = jidToSignalProtocolAddress(meId)
-			const senderName = jidToSignalSenderKeyName(group, meId)
-
-			const senderKeyDistributionMessage = await builder.create(senderName)
-
-			const cipher = new GroupCipher(storage, group, meAddr)
-
 			return parsedKeys.transaction(async () => {
-				const ciphertext = await cipher.encrypt(data)
-
-				return {
-					ciphertext,
-					senderKeyDistributionMessage: senderKeyDistributionMessage.serialize()
-				}
+				const { skdm } = await ensureSenderKeyAndCreateSkdm(group, meId)
+				const meAddr = jidToSignalProtocolAddress(meId)
+				const ciphertext = await new GroupCipher(storage, group, meAddr).encrypt(data)
+				return { ciphertext, senderKeyDistributionMessage: skdm.serialize() }
 			}, group)
+		},
+
+		async getSenderKeyDistributionMessage({ group, meId }) {
+			return parsedKeys.transaction(async () => {
+				const { skdm } = await ensureSenderKeyAndCreateSkdm(group, meId)
+				return skdm.serialize()
+			}, group)
+		},
+
+		async hasSenderKey({ group, meId }) {
+			const senderName = jidToSignalSenderKeyName(group, meId).toString()
+			const { [senderName]: key } = await auth.keys.get('sender-key', [senderName])
+			return !!key
+		},
+
+		async getSessionInfo(jid) {
+			const addr = jidToSignalProtocolAddress(jid).toString()
+			const session = (await storage.loadSession(addr)) as {
+				getOpenSession?: () => { indexInfo?: { baseKey?: Buffer }; registrationId?: number } | undefined
+			} | null
+			if (!session) {
+				return null
+			}
+
+			const open = session.getOpenSession?.()
+			const baseKey = open?.indexInfo?.baseKey
+			const registrationId = open?.registrationId
+			if (!baseKey || typeof registrationId !== 'number') {
+				return null
+			}
+
+			return { baseKey: new Uint8Array(baseKey), registrationId }
 		},
 
 		async injectE2ESession({ jid, session }) {
 			logger.trace({ jid }, 'injecting E2EE session')
 			const cipher = new SessionBuilder(storage, jidToSignalProtocolAddress(jid))
 			return parsedKeys.transaction(async () => {
-				await cipher.initOutgoing(session)
+				// libsignal runtime accepts an absent prekey (initOutgoing checks `device.preKey && ...`)
+				// but the bundled .d.ts marks it required.
+				await cipher.initOutgoing(session as unknown as Parameters<typeof cipher.initOutgoing>[0])
 			}, jid)
 		},
 		jidToSignalProtocolAddress(jid) {
@@ -207,6 +244,11 @@ export function makeLibSignalRepository(
 			return parsedKeys.transaction(async () => {
 				await auth.keys.set({ session: sessionUpdates })
 			}, `delete-${jids.length}-sessions`)
+		},
+
+		close() {
+			migratedSessionCache.clear()
+			lidMapping.close()
 		},
 
 		async migrateSession(
@@ -440,9 +482,7 @@ function signalStorage(
 			const { [wireJid]: existingKey } = await keys.get('identity-key', [wireJid])
 
 			const keysMatch =
-				existingKey &&
-				existingKey.length === identityKey.length &&
-				existingKey.every((byte, i) => byte === identityKey[i])
+				existingKey?.length === identityKey.length && existingKey.every((byte, i) => byte === identityKey[i])
 
 			if (existingKey && !keysMatch) {
 				// Identity changed - clear session and update key

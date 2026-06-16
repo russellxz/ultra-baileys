@@ -1,3 +1,4 @@
+import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import type {
 	AuthenticationCreds,
@@ -33,6 +34,7 @@ import { aesDecryptGCM, hmacSign } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
+import { buildMergedTcTokenIndexWrite, resolveTcTokenJid } from './tc-token-utils'
 
 type ProcessMessageContext = {
 	shouldProcessHistoryMsg: boolean
@@ -54,6 +56,64 @@ const REAL_MSG_STUB_TYPES = new Set([
 ])
 
 const REAL_MSG_REQ_ME_STUB_TYPES = new Set([WAMessageStubType.GROUP_PARTICIPANT_ADD])
+
+async function storeTcTokensFromHistorySync(
+	chats: Chat[],
+	signalRepository: SignalRepositoryWithLIDStore,
+	keyStore: SignalKeyStoreWithTransaction,
+	logger?: ILogger
+) {
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
+	const candidates: { storageJid: string; token: Buffer; ts: number; senderTs?: number }[] = []
+	for (const chat of chats) {
+		const ts = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : 0
+		if (chat.tcToken?.length && ts > 0) {
+			const jid = jidNormalizedUser(chat.id!)
+			const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+			candidates.push({
+				storageJid,
+				token: Buffer.from(chat.tcToken),
+				ts,
+				senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
+			})
+		}
+	}
+
+	if (!candidates.length) {
+		return
+	}
+
+	const jids = candidates.map(c => c.storageJid)
+	const existing = await keyStore.get('tctoken', jids)
+	const entries: Record<string, { token: Buffer; timestamp?: string; senderTimestamp?: number }> = {}
+
+	for (const c of candidates) {
+		const existingEntry = existing[c.storageJid]
+		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+		if (existingTs > 0 && existingTs >= c.ts) {
+			continue
+		}
+
+		entries[c.storageJid] = {
+			...existingEntry,
+			token: c.token,
+			timestamp: String(c.ts),
+			...(c.senderTs !== undefined ? { senderTimestamp: c.senderTs } : {})
+		}
+	}
+
+	if (Object.keys(entries).length) {
+		logger?.debug({ count: Object.keys(entries).length }, 'storing tctokens from history sync')
+		try {
+			// Include updated __index so cross-session pruning picks these JIDs up.
+			const indexWrite = await buildMergedTcTokenIndexWrite(keyStore, Object.keys(entries))
+			await keyStore.set({ tctoken: { ...entries, ...indexWrite } })
+		} catch (err) {
+			logger?.warn({ err }, 'failed to store tctokens from history sync')
+		}
+	}
+}
 
 /** Cleans a received message to further processing */
 export const cleanMessage = (message: WAMessage, meId: string, meLid: string) => {
@@ -128,12 +188,24 @@ export const shouldIncrementChatUnread = (message: WAMessage) => !message.key.fr
  * Get the ID of the chat from the given key.
  * Typically -- that'll be the remoteJid, but for broadcasts, it'll be the participant
  */
-export const getChatId = ({ remoteJid, participant, fromMe }: WAMessageKey) => {
-	if (isJidBroadcast(remoteJid!) && !isJidStatusBroadcast(remoteJid!) && !fromMe) {
-		return participant!
+export const getChatId = ({ remoteJid, participant, fromMe }: WAMessageKey): string => {
+	if (!remoteJid) {
+		throw new Boom('Cannot derive chat id: message key is missing remoteJid', {
+			data: { remoteJid, participant, fromMe }
+		})
 	}
 
-	return remoteJid!
+	if (isJidBroadcast(remoteJid) && !isJidStatusBroadcast(remoteJid) && !fromMe) {
+		if (!participant) {
+			throw new Boom('Cannot derive chat id: broadcast message key is missing participant', {
+				data: { remoteJid, fromMe }
+			})
+		}
+
+		return participant
+	}
+
+	return remoteJid
 }
 
 type PollContext = {
@@ -258,6 +330,45 @@ const processMessage = async (
 
 	const protocolMsg = content?.protocolMessage
 	if (protocolMsg) {
+		// Mirror whatsmeow's `handleProtocolMessage` guard, but applied only to
+		// the protocol message types that originate from our own device — an
+		// attacker could otherwise spoof any of these to manipulate local state.
+		//
+		// Self-only types (drop if `!fromMe`):
+		//   - HISTORY_SYNC_NOTIFICATION                 (our phone driving history sync)
+		//   - APP_STATE_SYNC_KEY_SHARE                  (key share between our devices)
+		//   - LID_MIGRATION_MAPPING_SYNC                (server-initiated via our phone)
+		//   - PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE (response from our phone to our PDO request)
+		//
+		// Cross-user types (must NOT be dropped — legitimately arrive from others):
+		//   - REVOKE
+		//   - MESSAGE_EDIT
+		//   - EPHEMERAL_SETTING
+		//   - GROUP_MEMBER_LABEL_CHANGE
+		//
+		// See https://github.com/tulir/whatsmeow/blob/8d3700152a/message.go#L842-L845
+		// for the reference architecture — whatsmeow's `handleProtocolMessage`
+		// only contains self-only types because edits are unwrapped from
+		// `EditedMessage` BEFORE this dispatch and revokes aren't routed here.
+		const SELF_ONLY_TYPES = new Set<proto.Message.ProtocolMessage.Type>([
+			proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION,
+			proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE,
+			proto.Message.ProtocolMessage.Type.LID_MIGRATION_MAPPING_SYNC,
+			proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE
+		])
+		if (
+			protocolMsg.type !== null &&
+			protocolMsg.type !== undefined &&
+			SELF_ONLY_TYPES.has(protocolMsg.type) &&
+			!message.key.fromMe
+		) {
+			logger?.warn(
+				{ msgId: message.key.id, type: protocolMsg.type, from: message.key.participant || message.key.remoteJid },
+				'dropping spoofed self-only protocolMessage from non-self origin'
+			)
+			return
+		}
+
 		switch (protocolMsg.type) {
 			case proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION:
 				const histNotification = protocolMsg.historySyncNotification!
@@ -294,9 +405,12 @@ const processMessage = async (
 							.catch(err => logger?.warn({ err }, 'failed to store LID-PN mappings from history sync'))
 					}
 
+					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
+
 					ev.emit('messaging-history.set', {
 						...data,
 						isLatest: histNotification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND ? isLatest : undefined,
+						chunkOrder: histNotification.chunkOrder,
 						peerDataRequestSessionId: histNotification.peerDataRequestSessionId
 					})
 				}
@@ -346,21 +460,51 @@ const processMessage = async (
 			case proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
 				const response = protocolMsg.peerDataOperationRequestResponseMessage!
 				if (response) {
-					await placeholderResendCache?.del(response.stanzaId!)
 					// TODO: IMPLEMENT HISTORY SYNC ETC (sticker uploads etc.).
-					const { peerDataOperationResult } = response
-					for (const result of peerDataOperationResult!) {
-						const { placeholderMessageResendResponse: retryResponse } = result
+					const peerDataOperationResult = response.peerDataOperationResult || []
+					for (const result of peerDataOperationResult) {
+						const retryResponse = result?.placeholderMessageResendResponse
 						//eslint-disable-next-line max-depth
-						if (retryResponse) {
-							const webMessageInfo = proto.WebMessageInfo.decode(retryResponse.webMessageInfoBytes!)
-							// wait till another upsert event is available, don't want it to be part of the PDO response message
-							// TODO: parse through proper message handling utilities (to add relevant key fields)
+						if (!retryResponse?.webMessageInfoBytes) {
+							continue
+						}
+
+						//eslint-disable-next-line max-depth
+						try {
+							const webMessageInfo = proto.WebMessageInfo.decode(retryResponse.webMessageInfoBytes)
+							const msgId = webMessageInfo.key?.id
+							// Retrieve cached original message data (preserves LID details,
+							// timestamps, etc. that the phone may omit in its PDO response)
+							const cachedData = msgId ? await placeholderResendCache?.get<Partial<WAMessage> | true>(msgId) : undefined
+							//eslint-disable-next-line max-depth
+							if (msgId) {
+								await placeholderResendCache?.del(msgId)
+							}
+
+							let finalMsg: WAMessage
+							//eslint-disable-next-line max-depth
+							if (cachedData && typeof cachedData === 'object') {
+								// Apply decoded message content onto cached metadata (preserves LID etc.)
+								cachedData.message = webMessageInfo.message
+								//eslint-disable-next-line max-depth
+								if (webMessageInfo.messageTimestamp) {
+									cachedData.messageTimestamp = webMessageInfo.messageTimestamp
+								}
+
+								finalMsg = cachedData as WAMessage
+							} else {
+								finalMsg = webMessageInfo as WAMessage
+							}
+
+							logger?.debug({ msgId, requestId: response.stanzaId }, 'received placeholder resend')
+
 							ev.emit('messages.upsert', {
-								messages: [webMessageInfo as WAMessage],
+								messages: [finalMsg],
 								type: 'notify',
 								requestId: response.stanzaId!
 							})
+						} catch (err) {
+							logger?.warn({ err, stanzaId: response.stanzaId }, 'failed to decode placeholder resend response')
 						}
 					}
 				}
@@ -489,12 +633,19 @@ const processMessage = async (
 				id: jid,
 				author: message.key.participant!,
 				authorPn: message.key.participantAlt!,
+				authorUsername: message.key.participantUsername!,
 				participants,
 				action
 			})
 		const emitGroupUpdate = (update: Partial<GroupMetadata>) => {
 			ev.emit('groups.update', [
-				{ id: jid, ...update, author: message.key.participant ?? undefined, authorPn: message.key.participantAlt }
+				{
+					id: jid,
+					...update,
+					author: message.key.participant ?? undefined,
+					authorPn: message.key.participantAlt,
+					authorUsername: message.key.participantUsername
+				}
 			])
 		}
 
@@ -503,6 +654,7 @@ const processMessage = async (
 				id: jid,
 				author: message.key.participant!,
 				authorPn: message.key.participantAlt!,
+				authorUsername: message.key.participantUsername!,
 				participant: participant.lid,
 				participantPn: participant.pn,
 				action,
