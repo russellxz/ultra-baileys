@@ -540,7 +540,7 @@ function signalStorage(
 		},
 		storeSenderKey: async (senderKeyName: SenderKeyName, key: SenderKeyRecord) => {
 			const keyId = senderKeyName.toString()
-			await keys.set({ 'sender-key': { [keyId]: Buffer.from(key.serialize()) } })
+			await keys.set({ 'sender-key': { [keyId]: key.serialize() } })
 		},
 		getOurRegistrationId: () => creds.registrationId,
 		getOurIdentity: () => {
