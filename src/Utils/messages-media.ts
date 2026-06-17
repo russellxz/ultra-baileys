@@ -51,8 +51,13 @@ export const hkdfInfoKey = (type: MediaType) => {
 	return `WhatsApp ${hkdfInfo} Keys`
 }
 
-export const getRawMediaUploadData = async (media: WAMediaUpload, mediaType: MediaType, logger?: ILogger) => {
-	const { stream } = await getStream(media)
+export const getRawMediaUploadData = async (
+	media: WAMediaUpload,
+	mediaType: MediaType,
+	logger?: ILogger,
+	opts?: RequestInit
+) => {
+	const { stream } = await getStream(media, opts)
 	logger?.debug('got stream for raw upload')
 
 	const hasher = Crypto.createHash('sha256')

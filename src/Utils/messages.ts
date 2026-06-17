@@ -180,7 +180,8 @@ export const prepareWAMessageMedia = async (
 		const { filePath, fileSha256, fileLength } = await getRawMediaUploadData(
 			uploadData.media,
 			options.mediaTypeOverride || mediaType,
-			logger
+			logger,
+			options.options
 		)
 
 		const fileSha256B64 = fileSha256.toString('base64')
