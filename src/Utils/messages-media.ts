@@ -362,7 +362,96 @@ export async function generateThumbnail(
 	}
 }
 
+const getNodeHttpStream = async (
+	url: string | URL,
+	options: RequestInit & { agent?: Agent },
+	redirectCount = 0
+): Promise<Readable> => {
+	if (redirectCount > 5) {
+		throw new Boom(`Failed to fetch stream from ${url}`, { statusCode: 508, data: { url } })
+	}
+
+	const parsedUrl = new URL(url.toString())
+	const httpModule = parsedUrl.protocol === 'https:' ? await import('https') : await import('http')
+	const requestHeaders = normalizeHeaders(options.headers)
+
+	return new Promise((resolve, reject) => {
+		const req = httpModule.request(
+			{
+				hostname: parsedUrl.hostname,
+				port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+				path: parsedUrl.pathname + parsedUrl.search,
+				method: 'GET',
+				headers: requestHeaders,
+				agent: options.agent
+			},
+			res => {
+				if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+					res.resume()
+					const redirectedUrl = new URL(res.headers.location, parsedUrl).toString()
+					resolve(getNodeHttpStream(redirectedUrl, options, redirectCount + 1))
+					return
+				}
+
+				if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+					const statusCode = res.statusCode || 500
+					res.resume()
+					reject(new Boom(`Failed to fetch stream from ${url}`, { statusCode, data: { url } }))
+					return
+				}
+
+				resolve(res)
+			}
+		)
+
+		req.on('error', reject)
+
+		const signal = options.signal
+		if (signal) {
+			const abortRequest = () => {
+				req.destroy(new Error('Request aborted'))
+			}
+
+			if (signal.aborted) {
+				abortRequest()
+				return
+			}
+
+			signal.addEventListener('abort', abortRequest, { once: true })
+			req.on('close', () => signal.removeEventListener('abort', abortRequest))
+		}
+
+		req.end()
+	})
+}
+
+const normalizeHeaders = (headers: HeadersInit | undefined): Record<string, string> | undefined => {
+	if (!headers) {
+		return undefined
+	}
+
+	if (Array.isArray(headers)) {
+		return Object.fromEntries(headers)
+	}
+
+	if (headers instanceof Headers) {
+		const normalized: Record<string, string> = {}
+		headers.forEach((value, key) => {
+			normalized[key] = value
+		})
+		return normalized
+	}
+
+	return headers
+}
+
 export const getHttpStream = async (url: string | URL, options: RequestInit & { isStream?: true } = {}) => {
+	const dispatcher = options.dispatcher
+	const shouldUseNodeHttp = isNodeRuntime() && !!options.agent && !dispatcher
+	if (shouldUseNodeHttp) {
+		return getNodeHttpStream(url, options)
+	}
+
 	const response = await fetch(url.toString(), {
 		dispatcher: options.dispatcher,
 		method: 'GET',

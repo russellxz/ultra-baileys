@@ -37,6 +37,7 @@ import {
 	generateThumbnail,
 	getAudioDuration,
 	getAudioWaveform,
+	getHttpStream,
 	getRawMediaUploadData,
 	type MediaDownloadOptions
 } from './messages-media'
@@ -480,11 +481,13 @@ export const generateWAMessageContent = async (
 		if (options.getProfilePicUrl) {
 			const pfpUrl = await options.getProfilePicUrl(message.groupInvite.jid, 'preview')
 			if (pfpUrl) {
-				const resp = await fetch(pfpUrl, { method: 'GET', dispatcher: options?.options?.dispatcher })
-				if (resp.ok) {
-					const buf = Buffer.from(await resp.arrayBuffer())
-					m.groupInviteMessage.jpegThumbnail = buf
+				const stream = await getHttpStream(pfpUrl, options?.options || {})
+				const chunks: Buffer[] = []
+				for await (const chunk of stream) {
+					chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
 				}
+
+				m.groupInviteMessage.jpegThumbnail = Buffer.concat(chunks)
 			}
 		}
 	} else if (hasNonNullishProperty(message, 'pin')) {
