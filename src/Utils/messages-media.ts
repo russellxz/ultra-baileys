@@ -180,7 +180,8 @@ export const encodeBase64EncodedStringForUpload = (b64: string) =>
 
 export const generateProfilePicture = async (
 	mediaUpload: WAMediaUpload,
-	dimensions?: { width: number; height: number }
+	dimensions?: { width: number; height: number },
+	opts?: RequestInit
 ) => {
 	let buffer: Buffer
 
@@ -190,7 +191,7 @@ export const generateProfilePicture = async (
 		buffer = mediaUpload
 	} else {
 		// Use getStream to handle all WAMediaUpload types (Buffer, Stream, URL)
-		const { stream } = await getStream(mediaUpload)
+		const { stream } = await getStream(mediaUpload, opts)
 		// Convert the resulting stream to a buffer
 		buffer = await toBuffer(stream)
 	}

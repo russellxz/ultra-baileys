@@ -126,7 +126,7 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 		},
 
 		newsletterUpdatePicture: async (jid: string, content: WAMediaUpload) => {
-			const { img } = await generateProfilePicture(content)
+			const { img } = await generateProfilePicture(content, undefined, config.options)
 			return await newsletterUpdate(jid, { picture: img.toString('base64') })
 		},
 

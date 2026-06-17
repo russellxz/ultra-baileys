@@ -316,7 +316,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			targetJid = undefined
 		}
 
-		const { img } = await generateProfilePicture(content, dimensions)
+		const { img } = await generateProfilePicture(content, dimensions, config.options)
 		await query({
 			tag: 'iq',
 			attrs: {
