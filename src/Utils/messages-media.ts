@@ -284,6 +284,203 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 	}
 }
 
+// --- PTT (voice note) Opus repacketization ---------------------------------
+// WhatsApp's native voice notes pack several 20ms SILK frames per Opus packet
+// (TOC "code 3", e.g. 3x20ms = 60ms). libopus/ffmpeg emit one frame per packet
+// ("code 0"). iOS WhatsApp rejects code-0 PTT ("this audio is no longer
+// available, ask the sender to resend it"); Android tolerates it. Regrouping
+// the code-0 frames into code-3 packets makes voice notes play on iOS.
+
+const OGG_CRC_TABLE = (() => {
+	const table = new Uint32Array(256)
+	for (let i = 0; i < 256; i++) {
+		let r = (i << 24) >>> 0
+		for (let j = 0; j < 8; j++) {
+			r = r & 0x80000000 ? ((r << 1) ^ 0x04c11db7) >>> 0 : (r << 1) >>> 0
+		}
+
+		table[i] = r >>> 0
+	}
+
+	return table
+})()
+
+const oggPageCrc = (page: Buffer) => {
+	let crc = 0
+	for (let i = 0; i < page.length; i++) {
+		crc = (((crc << 8) >>> 0) ^ OGG_CRC_TABLE[((crc >>> 24) & 0xff) ^ page[i]!]!) >>> 0
+	}
+
+	return crc >>> 0
+}
+
+// Opus frame duration (in 48kHz samples) from the TOC config (RFC 6716 §3.1)
+const opusFrameSamples48k = (config: number) => {
+	const c = config & 0x1f
+	const ms = c < 12 ? [10, 20, 40, 60][c % 4]! : c < 16 ? (c % 2 === 0 ? 10 : 20) : [2.5, 5, 10, 20][c % 4]!
+	return Math.round(ms * 48)
+}
+
+const parseOggPackets = (buf: Buffer) => {
+	const packets: Buffer[] = []
+	let cur: Buffer[] = []
+	let off = 0
+	let serial = 0
+	let preSkip = 0
+	while (off + 27 <= buf.length) {
+		if (buf.toString('ascii', off, off + 4) !== 'OggS') {
+			break
+		}
+
+		serial = buf.readUInt32LE(off + 14)
+		const nseg = buf[off + 26]!
+		const segTableStart = off + 27
+		let dataOff = segTableStart + nseg
+		for (let s = 0; s < nseg; s++) {
+			const len = buf[segTableStart + s]!
+			cur.push(buf.subarray(dataOff, dataOff + len))
+			dataOff += len
+			if (len < 255) {
+				packets.push(Buffer.concat(cur))
+				cur = []
+			}
+		}
+
+		off = dataOff
+	}
+
+	if (cur.length) {
+		packets.push(Buffer.concat(cur))
+	}
+
+	if ((packets[0]?.length ?? 0) >= 12 && packets[0]!.subarray(0, 8).toString('ascii') === 'OpusHead') {
+		preSkip = packets[0]!.readUInt16LE(10)
+	}
+
+	return { packets, serial, preSkip }
+}
+
+const encodeOpusFrameLength = (len: number): number[] => {
+	if (len < 252) {
+		return [len]
+	}
+
+	const b0 = 252 + (len % 4)
+	return [b0, Math.floor((len - b0) / 4)]
+}
+
+const buildOggPage = (headerType: number, granule: number, serial: number, seq: number, packet: Buffer) => {
+	const segs: number[] = []
+	let rem = packet.length
+	while (rem >= 255) {
+		segs.push(255)
+		rem -= 255
+	}
+
+	segs.push(rem)
+	const header = Buffer.alloc(27 + segs.length)
+	header.write('OggS', 0, 'ascii')
+	header[4] = 0
+	header[5] = headerType
+	header.writeBigUInt64LE(BigInt(granule), 6)
+	header.writeUInt32LE(serial >>> 0, 14)
+	header.writeUInt32LE(seq >>> 0, 18)
+	header[26] = segs.length
+	for (let i = 0; i < segs.length; i++) {
+		header[27 + i] = segs[i]!
+	}
+
+	const page = Buffer.concat([header, packet])
+	page.writeUInt32LE(oggPageCrc(page), 22)
+	return page
+}
+
+/**
+ * Regroups single-frame ("code 0") Opus packets of an OGG/Opus stream into
+ * multi-frame ("code 3") packets (default 3x20ms = 60ms), matching the
+ * packetization WhatsApp's native client uses for voice notes so they play on
+ * iOS. Returns the input untouched if it is not OGG/Opus or is already code 3.
+ */
+export const repacketizeOggOpusToCode3 = (input: Buffer, framesPerPacket = 3): Buffer => {
+	if (!Buffer.isBuffer(input) || input.length < 4 || input.toString('ascii', 0, 4) !== 'OggS') {
+		return input
+	}
+
+	const { packets, serial, preSkip } = parseOggPackets(input)
+	if (packets.length < 3 || packets[0]!.subarray(0, 8).toString('ascii') !== 'OpusHead') {
+		return input
+	}
+
+	const audioPackets = packets.slice(2)
+	// already multi-frame? (first audio packet TOC code === 3) -> idempotent no-op
+	if (audioPackets[0]?.length && (audioPackets[0][0]! & 0x03) === 3) {
+		return input
+	}
+
+	const frames = audioPackets
+		.filter(p => p.length >= 1)
+		.map(p => ({ configStereo: p[0]! >> 2, samples: opusFrameSamples48k(p[0]! >> 3), data: p.subarray(1) }))
+	if (!frames.length) {
+		return input
+	}
+
+	const out: Buffer[] = [buildOggPage(0x02, 0, serial, 0, packets[0]!), buildOggPage(0x00, 0, serial, 1, packets[1]!)]
+	let seq = 2
+	let samplesDone = 0
+	let i = 0
+	while (i < frames.length) {
+		// a code-3 packet must hold frames of the same config; libopus may switch
+		// SILK<->CELT between frames, so only group consecutive same-config frames
+		const cs = frames[i]!.configStereo
+		const group: Buffer[] = []
+		while (i < frames.length && group.length < framesPerPacket && frames[i]!.configStereo === cs) {
+			group.push(frames[i]!.data)
+			samplesDone += frames[i]!.samples
+			i++
+		}
+
+		const toc = ((cs << 2) | 3) & 0xff
+		const frameCountByte = (0x80 | group.length) & 0xff // VBR, no padding, count
+		const lengths: number[] = []
+		for (let k = 0; k < group.length - 1; k++) {
+			lengths.push(...encodeOpusFrameLength(group[k]!.length))
+		}
+
+		const packet = Buffer.concat([Buffer.from([toc, frameCountByte, ...lengths]), ...group])
+		out.push(buildOggPage(i >= frames.length ? 0x04 : 0x00, preSkip + samplesDone, serial, seq, packet))
+		seq++
+	}
+
+	return Buffer.concat(out)
+}
+
+/**
+ * Resolves a PTT media upload to a Buffer and repacketizes its Opus stream to
+ * code 3 so the voice note plays on iOS. Falls back to the original media/buffer
+ * on any failure (worst case: current behaviour).
+ */
+export const repacketizePttOpus = async (
+	media: WAMediaUpload,
+	opts?: RequestInit & { maxContentLength?: number },
+	logger?: ILogger
+): Promise<WAMediaUpload> => {
+	let buffer: Buffer
+	try {
+		const { stream } = await getStream(media, opts)
+		buffer = await toBuffer(stream)
+	} catch (err) {
+		logger?.warn({ err }, 'ptt repacketize: could not buffer media, sending as-is')
+		return media
+	}
+
+	try {
+		return repacketizeOggOpusToCode3(buffer)
+	} catch (err) {
+		logger?.warn({ err }, 'ptt repacketize: skipped, sending original opus')
+		return buffer
+	}
+}
+
 export const toReadable = (buffer: Buffer) => {
 	const readable = new Readable({ read: () => {} })
 	readable.push(buffer)
