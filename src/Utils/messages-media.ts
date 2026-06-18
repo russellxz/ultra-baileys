@@ -402,6 +402,11 @@ const buildOggPage = (headerType: number, granule: number, serial: number, seq: 
  * iOS. Returns the input untouched if it is not OGG/Opus or is already code 3.
  */
 export const repacketizeOggOpusToCode3 = (input: Buffer, framesPerPacket = 3): Buffer => {
+	// guard against a non-terminating loop / invalid Opus frame count (RFC 6716: M <= 48)
+	if (!Number.isInteger(framesPerPacket) || framesPerPacket < 1 || framesPerPacket > 48) {
+		throw new Error('framesPerPacket must be an integer between 1 and 48')
+	}
+
 	if (!Buffer.isBuffer(input) || input.length < 4 || input.toString('ascii', 0, 4) !== 'OggS') {
 		return input
 	}
@@ -412,17 +417,18 @@ export const repacketizeOggOpusToCode3 = (input: Buffer, framesPerPacket = 3): B
 	}
 
 	const audioPackets = packets.slice(2)
-	// already multi-frame? (first audio packet TOC code === 3) -> idempotent no-op
-	if (audioPackets[0]?.length && (audioPackets[0][0]! & 0x03) === 3) {
+	// Only handle a stream of single-frame ("code 0") packets, as libopus/ffmpeg emit.
+	// Anything else (already code 3, or code 1/2 which have a different layout) is left
+	// untouched to avoid misinterpreting/corrupting it.
+	if (!audioPackets.length || audioPackets.some(p => p.length < 1 || (p[0]! & 0x03) !== 0)) {
 		return input
 	}
 
-	const frames = audioPackets
-		.filter(p => p.length >= 1)
-		.map(p => ({ configStereo: p[0]! >> 2, samples: opusFrameSamples48k(p[0]! >> 3), data: p.subarray(1) }))
-	if (!frames.length) {
-		return input
-	}
+	const frames = audioPackets.map(p => ({
+		configStereo: p[0]! >> 2,
+		samples: opusFrameSamples48k(p[0]! >> 3),
+		data: p.subarray(1)
+	}))
 
 	const out: Buffer[] = [buildOggPage(0x02, 0, serial, 0, packets[0]!), buildOggPage(0x00, 0, serial, 1, packets[1]!)]
 	let seq = 2
