@@ -285,7 +285,7 @@ export const decodeSyncdMutations = async (
 		}
 
 		const indexStr = Buffer.from(syncAction.index!).toString()
-		onMutation({ syncAction, index: JSON.parse(indexStr) })
+		onMutation({ syncAction, index: JSON.parse(indexStr), operation: operation ?? undefined })
 
 		ltGenerator.mix({
 			indexMac: record.index!.blob!,
@@ -834,7 +834,8 @@ export const processSyncAction = (
 
 	const {
 		syncAction: { value: action },
-		index: [type, id, msgId, fromMe]
+		index: [type, id, msgId, fromMe],
+		operation
 	} = syncAction
 
 	if (action?.muteAction) {
@@ -964,6 +965,19 @@ export const processSyncAction = (
 							messageId: syncAction.index[3],
 							labelId: syncAction.index[1]
 						} as MessageLabelAssociation)
+		})
+	} else if (
+		operation === proto.SyncdMutation.SyncdOperation.REMOVE &&
+		type === LabelAssociationType.Chat
+	) {
+		// Tombstone REMOVE: WhatsApp sends label removals with operation=REMOVE and empty labelAssociationAction
+		ev.emit('labels.association', {
+			type: 'remove',
+			association: {
+				type: LabelAssociationType.Chat,
+				chatId: msgId!,
+				labelId: id!
+			} as ChatLabelAssociation
 		})
 	} else if (action?.localeSetting?.locale) {
 		ev.emit('settings.update', { setting: 'locale', value: action.localeSetting.locale })
