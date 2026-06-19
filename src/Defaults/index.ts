@@ -87,6 +87,9 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	proxyTimeoutMultiplier: 1.5,
 	maxConsecutiveTimeouts: 3,
 	initialSyncTimeoutMs: 20_000,
+	autoSendComposingPresence: false,
+	composingPresenceDurationMs: 1500,
+	minMessageIntervalMs: 0,
 	options: {},
 	appStateMacVerification: {
 		patch: false,

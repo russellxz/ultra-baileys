@@ -269,9 +269,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const msgId = node.attrs.id
 		// Apply proxy multiplier to explicit timeouts as well
-		const resolvedTimeout = timeoutMs
-			? Math.round(timeoutMs * proxyMultiplier)
-			: effectiveQueryTimeoutMs
+		const resolvedTimeout = timeoutMs ? Math.round(timeoutMs * proxyMultiplier) : effectiveQueryTimeoutMs
 
 		const result = await promiseTimeout<any>(resolvedTimeout, async (resolve, reject) => {
 			const result = waitForMessage(msgId, resolvedTimeout).catch(reject)

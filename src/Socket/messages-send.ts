@@ -58,6 +58,8 @@ import {
 	isJidBot,
 	isJidGroup,
 	isJidMetaAI,
+	isJidNewsletter,
+	isJidStatusBroadcast,
 	isLidUser,
 	isPnUser,
 	jidDecode,
@@ -79,7 +81,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		patchMessageBeforeSending,
 		cachedGroupMetadata,
 		enableRecentMessageCache,
-		maxMsgRetryCount
+		maxMsgRetryCount,
+		autoSendComposingPresence,
+		composingPresenceDurationMs,
+		minMessageIntervalMs
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const {
@@ -97,6 +102,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
+	// Pacing: serializes the minimum interval between outgoing sendMessage calls.
+	let lastMessageSentAt = 0
+	const pacingMutex = makeMutex()
+	const waitForMessagePacing = (): Promise<void> =>
+		pacingMutex.mutex(async () => {
+			if (minMessageIntervalMs > 0) {
+				const elapsed = Date.now() - lastMessageSentAt
+				const waitMs = minMessageIntervalMs - elapsed
+				if (waitMs > 0) {
+					await new Promise<void>(resolve => setTimeout(resolve, waitMs))
+				}
+				lastMessageSentAt = Date.now()
+			}
+		})
 
 	/**
 	 * Set of tctoken storage JIDs with a fire-and-forget `issuePrivacyTokens` IQ in flight.
@@ -1397,6 +1417,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							event_type: 'creation'
 						}
 					} as BinaryNode)
+				}
+
+				// Pacing: enforce minimum interval between outgoing messages.
+				await waitForMessagePacing()
+
+				// Composing presence: show typing indicator before message is sent.
+				// Skipped for control messages (delete/edit/pin) and non-chat destinations.
+				if (
+					autoSendComposingPresence &&
+					!isDeleteMsg &&
+					!isEditMsg &&
+					!isPinMsg &&
+					!isJidStatusBroadcast(jid) &&
+					!isJidNewsletter(jid)
+				) {
+					await sock.sendPresenceUpdate('composing', jid)
+					await new Promise<void>(resolve => setTimeout(resolve, composingPresenceDurationMs))
 				}
 
 				await relayMessage(jid, fullMsg.message!, {

@@ -130,6 +130,29 @@ export type SocketConfig = {
 	initialSyncTimeoutMs: number
 
 	/**
+	 * Automatically send a "composing" (typing) presence update before each outgoing 1:1 or
+	 * group message. Makes the session look more human to WhatsApp's anti-spam systems.
+	 * Has no effect on deletes, edits, pins, status broadcasts, or newsletter messages.
+	 * Default: false
+	 */
+	autoSendComposingPresence: boolean
+
+	/**
+	 * How long in ms to display the composing indicator before the message is sent.
+	 * Only used when autoSendComposingPresence is true.
+	 * Default: 1500
+	 */
+	composingPresenceDurationMs: number
+
+	/**
+	 * Minimum interval in ms enforced between successive sendMessage calls.
+	 * Concurrent calls are serialized and each waits until the previous slot plus this
+	 * interval has elapsed. 0 disables pacing entirely.
+	 * Default: 0
+	 */
+	minMessageIntervalMs: number
+
+	/**
 	 * Returns if a jid should be ignored,
 	 * no event for that jid will be triggered.
 	 * Messages from that jid will also not be decrypted

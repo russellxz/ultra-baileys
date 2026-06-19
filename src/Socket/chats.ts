@@ -1194,11 +1194,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * Uses Promise.allSettled to prevent one failing query from canceling the others
 	 * */
 	const executeInitQueries = async () => {
-		const results = await Promise.allSettled([
-			fetchProps(),
-			fetchBlocklist(),
-			fetchPrivacySettings()
-		])
+		const results = await Promise.allSettled([fetchProps(), fetchBlocklist(), fetchPrivacySettings()])
 
 		for (const [i, result] of results.entries()) {
 			if (result.status === 'rejected') {
