@@ -239,7 +239,7 @@ export const fetchLatestBaileysVersion = async (options: RequestInit = {}) => {
 	const URL = 'https://raw.githubusercontent.com/WhiskeySockets/Baileys/master/src/Defaults/index.ts'
 	try {
 		const response = await fetch(URL, {
-			dispatcher: options.dispatcher,
+			...options,
 			method: 'GET',
 			headers: options.headers
 		})
