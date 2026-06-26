@@ -11,6 +11,7 @@ import {
 	STATUS_EXPIRY_SECONDS
 } from '../Defaults'
 import type {
+	LIDMigrationUpdate,
 	GroupParticipant,
 	MessageReceiptType,
 	MessageRelayOptions,
@@ -75,6 +76,7 @@ import {
 	getBinaryNodeChildren,
 	getBinaryNodeChildString,
 	getBinaryNodeChildUInt,
+	isHostedLidUser,
 	isJidGroup,
 	isJidNewsletter,
 	isJidStatusBroadcast,
@@ -1845,8 +1847,54 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const handleLidRefreshAck = async (attrs: BinaryNode['attrs']) => {
+		// NOTE: Yes, it is a string right from the WhatsApp x_x
+		const refreshLidTrue = 'true'
+		if (!config.enableLidMigrationSafety || attrs['refresh_lid'] !== refreshLidTrue)
+			return
+
+		const oldLid = attrs.from || attrs.remoteJid
+		if (!oldLid || (!isLidUser(oldLid) && !isHostedLidUser(oldLid))) {
+			logger.warn({ attrs }, `received 'refresh_lid' ack without a LID sender`)
+			return
+		}
+
+		let pn: string|undefined
+		let newLid: string|undefined
+
+		try {
+			pn = (await signalRepository.lidMapping.getPNForLID(oldLid)) || undefined
+
+			if (pn && config.refreshMappingOnLidMigration) {
+				const refreshedLid = await signalRepository.lidMapping.getLIDForPN(pn, { force: true })
+				if (refreshedLid && !areJidsSameUser(refreshedLid, oldLid)) {
+					newLid = refreshedLid
+					await signalRepository
+						.migrateSession(pn, newLid)
+						.catch(err => logger.warn({ err: err, pn: pn, oldLid: oldLid, newLid: newLid }, `failed to migrate Signal session after 'refresh_lid' ack`))
+				}
+			}
+		} catch (err) {
+			logger.warn(
+				{ err, oldLid },
+				`failed to refresh LID mapping after 'refresh_lid' ack`,
+			)
+		}
+
+		const migration: LIDMigrationUpdate = {
+			oldLid: oldLid,
+			reason: 'ack-refresh-lid',
+			pn: pn,
+			newLid: newLid,
+			messageId: attrs.id,
+		}
+
+		ev.emit('lid-migration.update', migration)
+	}
+
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
 		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
+		await handleLidRefreshAck(attrs)
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
 		// // current hypothesis is that if pash is sent in the ack
