@@ -1013,11 +1013,7 @@ export const processSyncAction = (
 		})
 	} else if (action?.nctSaltSyncAction) {
 		const salt = action.nctSaltSyncAction.salt
-		if (salt?.length) {
-			ev.emit('creds.update', { nctSalt: new Uint8Array(salt) })
-		} else {
-			ev.emit('creds.update', { nctSalt: undefined })
-		}
+		ev.emit('creds.update', { nctSalt: salt?.length ? new Uint8Array(salt) : undefined })
 	} else {
 		logger?.debug({ syncAction, id }, 'unprocessable update')
 	}

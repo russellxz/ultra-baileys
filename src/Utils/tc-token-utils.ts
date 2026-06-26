@@ -217,15 +217,7 @@ export async function storeTcTokensFromIqResult({
 	}
 }
 
-// ─── cstoken (NCT — Client-Side Token) ─────────────────────────────────
-
-/**
- * Compute cstoken = HMAC-SHA256(nctSalt, UTF8(recipientLid)).
- * Deterministic fallback when no tctoken exists (first-contact, post-restriction).
- * Ref: WAWebSendMsgCreateFanoutStanza.genCsTokenBody
- */
+/** Client-side fallback token when the recipient hasn't issued a tctoken. Mirrors WA Web genCsTokenBody. */
 export function computeCsToken(nctSalt: Uint8Array, recipientLid: string): Uint8Array {
-	const hmac = createHmac('sha256', nctSalt)
-	hmac.update(recipientLid, 'utf8')
-	return new Uint8Array(hmac.digest())
+	return new Uint8Array(createHmac('sha256', nctSalt).update(recipientLid, 'utf8').digest())
 }

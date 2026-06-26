@@ -1091,8 +1091,6 @@ describe('tctoken index helpers', () => {
 	})
 })
 
-// ─── cstoken (NCT — Client-Side Token) ────────────────────────────────
-
 describe('computeCsToken', () => {
 	const SALT = new Uint8Array([
 		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13,
@@ -1153,8 +1151,6 @@ describe('computeCsToken', () => {
 		expect(Buffer.from(result)).toEqual(expected)
 	})
 })
-
-// ─── cstoken fallback integration ──────────────────────────────────────
 
 describe('cstoken fallback logic', () => {
 	const SALT = new Uint8Array(32).fill(0xab)

@@ -1088,15 +1088,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					content: tcTokenBuffer
 				})
 			} else if (is1on1Send && authState.creds.nctSalt?.length && tcTokenJid && isLidUser(tcTokenJid)) {
-				// Fallback: no tctoken from recipient, compute cstoken from NCT salt
-				// WA Web skips cstoken when accountLid is null (no LID mapping)
-				const csToken = computeCsToken(authState.creds.nctSalt, tcTokenJid)
+				// no tctoken from the recipient — fall back to a self-computed cstoken (WA Web parity)
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'cstoken',
 					attrs: {},
-					content: csToken
+					content: computeCsToken(authState.creds.nctSalt, tcTokenJid)
 				})
-				logger.debug({ jid: destinationJid }, 'cstoken fallback — no tctoken available')
+				logger.debug({ jid: destinationJid }, 'attached cstoken fallback')
 			}
 
 			if (additionalNodes && additionalNodes.length > 0) {
