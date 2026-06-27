@@ -69,6 +69,7 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
+import { yieldEventLoop } from '../Utils/yield-event-loop'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -532,6 +533,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return msgId
 	}
 
+
 	const createParticipantNodes = async (
 		recipientJids: string[],
 		message: proto.IMessage,
@@ -552,59 +554,59 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
 
-		const encryptionPromises = (patchedMessages as any).map(
-			async ({ recipientJid: jid, message: patchedMessage }: any) => {
-				try {
-					if (!jid) return null
+		const nodes: BinaryNode[] = []
 
-					let msgToEncrypt = patchedMessage
+		for (const { recipientJid: jid, message: patchedMessage } of patchedMessages as any) {
+			try {
+				if (!jid) continue
 
-					if (dsmMessage) {
-						const { user: targetUser } = jidDecode(jid)!
-						const { user: ownPnUser } = jidDecode(meId)!
-						const ownLidUser = meLidUser
+				await yieldEventLoop()
+				let msgToEncrypt = patchedMessage
 
-						const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
-						const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
+				if (dsmMessage) {
+					const { user: targetUser } = jidDecode(jid)!
+					const { user: ownPnUser } = jidDecode(meId)!
+					const ownLidUser = meLidUser
 
-						if (isOwnUser && !isExactSenderDevice) {
-							msgToEncrypt = dsmMessage
-							logger.debug({ jid, targetUser }, 'Using DSM for own device')
-						}
+					const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
+					const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
+
+					if (isOwnUser && !isExactSenderDevice) {
+						msgToEncrypt = dsmMessage
+						logger.debug({ jid, targetUser }, 'Using DSM for own device')
+					}
+				}
+
+				const bytes = encodeWAMessage(msgToEncrypt)
+				const mutexKey = jid
+
+				const node = await encryptionMutex.mutex(mutexKey, async () => {
+					const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+
+					if (type === 'pkmsg') {
+						shouldIncludeDeviceIdentity = true
 					}
 
-					const bytes = encodeWAMessage(msgToEncrypt)
-					const mutexKey = jid
+					return {
+						tag: 'to',
+						attrs: { jid },
+						content: [
+							{
+								tag: 'enc',
+								attrs: { v: '2', type, ...(extraAttrs || {}) },
+								content: ciphertext
+							}
+						]
+					}
+				})
 
-					const node = await encryptionMutex.mutex(mutexKey, async () => {
-						const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
-
-						if (type === 'pkmsg') {
-							shouldIncludeDeviceIdentity = true
-						}
-
-						return {
-							tag: 'to',
-							attrs: { jid },
-							content: [
-								{
-									tag: 'enc',
-									attrs: { v: '2', type, ...(extraAttrs || {}) },
-									content: ciphertext
-								}
-							]
-						}
-					})
-
-					return node
-				} catch (err) {
-					logger.error({ jid, err }, 'Failed to encrypt for recipient')
-					return null
+				if (node) {
+					nodes.push(node)
 				}
+			} catch (err) {
+				logger.error({ jid, err }, 'Failed to encrypt for recipient')
 			}
-		)
-
-		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null) as BinaryNode[]
+		}
 
 		if (recipientJids.length > 0 && nodes.length === 0) {
 			throw new Boom('All encryptions failed', { statusCode: 500 })
