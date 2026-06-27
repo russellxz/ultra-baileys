@@ -58,7 +58,7 @@ export const getBinaryNodeChildString = (node: BinaryNode | undefined, childTag:
 
 export const getBinaryNodeChildUInt = (node: BinaryNode, childTag: string, length: number) => {
 	const buff = getBinaryNodeChildBuffer(node, childTag)
-	if (buff) {
+	if (buff && buff.length >= length) {
 		return bufferToUInt(buff, length)
 	}
 }
