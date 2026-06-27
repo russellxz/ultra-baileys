@@ -28,9 +28,11 @@ interface TransactionContext {
 	dbQueries: number
 }
 
-// Shared across sockets on purpose: a per-socket instance leaks the heap under Node's legacy
-// async-context propagation. The context lives in the run scope, so sockets never collide.
-const txStorage = new AsyncLocalStorage<TransactionContext>()
+// One instance per process: a per-socket AsyncLocalStorage leaks the heap under Node's legacy
+// async-context propagation, where every live instance tags every pending async resource. The
+// value is keyed by store token so a store only ever sees its own context, even when another
+// wrapped store runs inside its transaction.
+const txStorage = new AsyncLocalStorage<Map<symbol, TransactionContext>>()
 
 /**
  * Adds caching capability to a SignalKeyStore
@@ -122,6 +124,9 @@ export const addTransactionCapability = (
 	logger: ILogger,
 	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions
 ): SignalKeyStoreWithTransaction => {
+	// Identifies this store's slot inside the shared transaction map
+	const storeToken = Symbol('signalTxStore')
+
 	// Queues for concurrency control (keyed by signal data type - bounded set)
 	const keyQueues = new Map<string, PQueue>()
 
@@ -181,10 +186,17 @@ export const addTransactionCapability = (
 	}
 
 	/**
+	 * Resolve this store's transaction context from the shared async-local map
+	 */
+	function getContext(): TransactionContext | undefined {
+		return txStorage.getStore()?.get(storeToken)
+	}
+
+	/**
 	 * Check if currently in a transaction
 	 */
 	function isInTransaction(): boolean {
-		return !!txStorage.getStore()
+		return !!getContext()
 	}
 
 	/**
@@ -218,7 +230,7 @@ export const addTransactionCapability = (
 
 	return {
 		get: async (type, ids) => {
-			const ctx = txStorage.getStore()
+			const ctx = getContext()
 
 			if (!ctx) {
 				// No transaction - direct read without exclusive lock for concurrency
@@ -253,7 +265,7 @@ export const addTransactionCapability = (
 		},
 
 		set: async data => {
-			const ctx = txStorage.getStore()
+			const ctx = getContext()
 
 			if (!ctx) {
 				// No transaction - direct write with queue protection
@@ -303,10 +315,10 @@ export const addTransactionCapability = (
 		isInTransaction,
 
 		transaction: async (work, key) => {
-			const existing = txStorage.getStore()
+			const stores = txStorage.getStore()
 
-			// Nested transaction - reuse existing context
-			if (existing) {
+			// Nested transaction on this same store - reuse existing context
+			if (stores?.get(storeToken)) {
 				logger.trace('reusing existing transaction context')
 				return work()
 			}
@@ -323,10 +335,14 @@ export const addTransactionCapability = (
 						dbQueries: 0
 					}
 
+					// Inherit contexts from outer stores so they stay isolated by token
+					const next = new Map(stores)
+					next.set(storeToken, ctx)
+
 					logger.trace('entering transaction')
 
 					try {
-						const result = await txStorage.run(ctx, work)
+						const result = await txStorage.run(next, work)
 
 						// Commit mutations
 						await commitWithRetry(ctx.mutations)

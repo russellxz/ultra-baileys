@@ -94,6 +94,43 @@ describe('addTransactionCapability', () => {
 		expect((await backingB.get('app-state-sync-key', ['1']))['1']).toMatchObject({ keyId: 2 })
 	})
 
+	it('does not leak a transaction context into another store in the same async chain', async () => {
+		const backingA = memoryStore()
+		const backingB = memoryStore()
+		const a = addTransactionCapability(backingA, silentLogger(), opts)
+		const b = addTransactionCapability(backingB, silentLogger(), opts)
+
+		await a.transaction(async () => {
+			// b is untouched by a's ambient context
+			expect(b.isInTransaction()).toBe(false)
+			await b.set({ 'app-state-sync-key': key(9) as never })
+			await a.set({ 'app-state-sync-key': key(1) as never })
+		}, 'app-state-sync-key')
+
+		// b's write went straight to its own backing store, not into a's mutations
+		expect((await backingB.get('app-state-sync-key', ['1']))['1']).toMatchObject({ keyId: 9 })
+		expect((await backingA.get('app-state-sync-key', ['1']))['1']).toMatchObject({ keyId: 1 })
+	})
+
+	it('keeps nested transactions across stores isolated by token', async () => {
+		const backingA = memoryStore()
+		const backingB = memoryStore()
+		const a = addTransactionCapability(backingA, silentLogger(), opts)
+		const b = addTransactionCapability(backingB, silentLogger(), opts)
+
+		await a.transaction(async () => {
+			await a.set({ 'app-state-sync-key': key(1) as never })
+			await b.transaction(async () => {
+				expect(a.isInTransaction()).toBe(true)
+				expect(b.isInTransaction()).toBe(true)
+				await b.set({ 'app-state-sync-key': key(2) as never })
+			}, 'app-state-sync-key')
+		}, 'app-state-sync-key')
+
+		expect((await backingA.get('app-state-sync-key', ['1']))['1']).toMatchObject({ keyId: 1 })
+		expect((await backingB.get('app-state-sync-key', ['1']))['1']).toMatchObject({ keyId: 2 })
+	})
+
 	it('reads buffered writes before commit and reuses nested transactions', async () => {
 		const store = addTransactionCapability(memoryStore(), silentLogger(), opts)
 
