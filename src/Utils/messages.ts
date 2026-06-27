@@ -38,7 +38,8 @@ import {
 	getAudioDuration,
 	getAudioWaveform,
 	getRawMediaUploadData,
-	type MediaDownloadOptions
+	type MediaDownloadOptions,
+	repacketizePttOpus
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
 
@@ -143,6 +144,15 @@ export const prepareWAMessageMedia = async (
 		media: (message as any)[mediaType]
 	}
 	delete (uploadData as any)[mediaType]
+
+	// PTT voice notes must use Opus "code 3" packetization (multiple frames per
+	// packet) to play on iOS WhatsApp; libopus/ffmpeg emit "code 0", which iOS
+	// rejects ("audio no longer available"). Regroup so iOS accepts the voice note
+	// (Android already tolerates both). No-op if already code 3 / not OGG/Opus.
+	if (mediaType === 'audio' && uploadData.ptt === true) {
+		uploadData.media = await repacketizePttOpus(uploadData.media, options.options, logger)
+	}
+
 	// check if cacheable + generate cache key
 	const cacheableKey =
 		typeof uploadData.media === 'object' &&
