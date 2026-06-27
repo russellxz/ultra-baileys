@@ -28,6 +28,10 @@ interface TransactionContext {
 	dbQueries: number
 }
 
+// Shared across sockets on purpose: a per-socket instance leaks the heap under Node's legacy
+// async-context propagation. The context lives in the run scope, so sockets never collide.
+const txStorage = new AsyncLocalStorage<TransactionContext>()
+
 /**
  * Adds caching capability to a SignalKeyStore
  * @param store the store to add caching to
@@ -118,8 +122,6 @@ export const addTransactionCapability = (
 	logger: ILogger,
 	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions
 ): SignalKeyStoreWithTransaction => {
-	const txStorage = new AsyncLocalStorage<TransactionContext>()
-
 	// Queues for concurrency control (keyed by signal data type - bounded set)
 	const keyQueues = new Map<string, PQueue>()
 
