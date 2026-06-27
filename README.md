@@ -1185,24 +1185,88 @@ await sock.updateDefaultDisappearingMode(ephemeral)
 ## Broadcast Lists & Stories
 
 ### Send Broadcast & Stories
-- Messages can be sent to broadcasts & stories. You need to add the following message options in sendMessage, like this:
+Messages can be sent to broadcasts & stories using `sendMessage`.
+
+> **Note:** For stories, use `status@broadcast` as the JID. `statusJidList` is required for stories — it must contain the list of contacts who will receive the status update. For broadcast lists, use the broadcast list JID (e.g. `12345678@broadcast`) instead.
+
+#### Text Status
 ```ts
 await sock.sendMessage(
-    jid,
+    'status@broadcast',
+    { text: 'Hello from Baileys!' },
     {
-        image: {
-            url: url
-        },
-        caption: caption
-    },
-    {
-        backgroundColor: backgroundColor,
-        font: font,
-        statusJidList: statusJidList,
+        statusJidList: ['628xxx@s.whatsapp.net'],
+        backgroundColor: '#FF6B6B', // optional background color
+        font: 2,                    // optional font style (0-6)
         broadcast: true
     }
 )
 ```
+
+#### Image Status with Caption
+```ts
+await sock.sendMessage(
+    'status@broadcast',
+    {
+        image: { url: './image.jpg' }, // or use Buffer
+        caption: 'Check this out!'
+    },
+    {
+        statusJidList: ['628xxx@s.whatsapp.net'],
+        broadcast: true
+    }
+)
+```
+
+#### Video Status with Caption + Reshare Enabled
+```ts
+await sock.sendMessage(
+    'status@broadcast',
+    {
+        video: { url: './video.mp4' }, // or use Buffer
+        caption: 'Watch this!',
+        // Add contextInfo.featureEligibilities.canBeReshared to enable
+        // the reshare button for recipients (requires "Allow Resharing"
+        // to be enabled in WhatsApp Privacy settings on the sender's phone)
+        contextInfo: {
+            featureEligibilities: { canBeReshared: true }
+        }
+    },
+    {
+        statusJidList: ['628xxx@s.whatsapp.net'],
+        broadcast: true
+    }
+)
+```
+
+#### Audio Status (Voice)
+> ⚠️ **Important:** Audio status **requires both `ptt: true` AND `backgroundColor`** in the options, otherwise the status will appear on WhatsApp Web but **will not be visible on mobile devices**.
+
+```ts
+await sock.sendMessage(
+    'status@broadcast',
+    {
+        audio: { url: './audio.ogg' }, // or use Buffer: { audio: fs.readFileSync('./audio.ogg') }
+        mimetype: 'audio/ogg; codecs=opus',
+        ptt: true  // required for audio status to appear on mobile
+    },
+    {
+        statusJidList: ['628xxx@s.whatsapp.net'],
+        backgroundColor: '#000000', // required — without this, status won't show on mobile
+        broadcast: true
+    }
+)
+```
+
+> **Note:** Audio/voice statuses **cannot be reshared** — this is a WhatsApp platform restriction. If reshare is needed, wrap the audio in a video with a black background:
+> ```bash
+> ffmpeg -f lavfi -i color=c=black:s=1080x1920:r=25 -i audio.ogg \
+>   -c:v libx264 -c:a aac -shortest output.mp4
+> ```
+> Then send as a video status with `canBeReshared: true`.
+
+---
+
 - Message body can be a `extendedTextMessage` or `imageMessage` or `videoMessage` or `voiceMessage`, see the [AnyRegularMessageContent type alias](https://baileys.wiki/docs/api/type-aliases/AnyRegularMessageContent/)
 - You can add `backgroundColor` and other options in the message options, see the [MiscMessageGenerationOptions type alias](https://baileys.wiki/docs/api/type-aliases/MiscMessageGenerationOptions/)
 - `broadcast: true` enables broadcast mode
