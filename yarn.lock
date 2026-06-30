@@ -3115,7 +3115,6 @@ __metadata:
     jimp: "npm:^1.6.1"
     jiti: "npm:^2.4.2"
     json: "npm:^11.0.0"
-    libsignal: "npm:^6.0.0"
     link-preview-js: "npm:^3.0.0"
     lru-cache: "npm:^11.1.0"
     music-metadata: "npm:^11.12.3"
@@ -3701,13 +3700,6 @@ __metadata:
   version: 6.2.2
   resolution: "css-what@npm:6.2.2"
   checksum: 10c0/91e24c26fb977b4ccef30d7007d2668c1c10ac0154cc3f42f7304410e9594fb772aea4f30c832d2993b132ca8d99338050866476210316345ec2e7d47b248a56
-  languageName: node
-  linkType: hard
-
-"curve25519-js@npm:^0.0.4":
-  version: 0.0.4
-  resolution: "curve25519-js@npm:0.0.4"
-  checksum: 10c0/5b6c3a0dcaf045588aa78c2d1113310bf93fda9c59bd533b2a06da807024eec92feb39b203d1db9c09eda94bba1252d507fb3901283d32898e43090546785ddd
   languageName: node
   linkType: hard
 
@@ -6118,16 +6110,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"libsignal@npm:^6.0.0":
-  version: 6.0.0
-  resolution: "libsignal@npm:6.0.0"
-  dependencies:
-    curve25519-js: "npm:^0.0.4"
-    protobufjs: "npm:^7.5.5"
-  checksum: 10c0/111675e3834641f4c4635c7ad4a6a03a92d24a3a8e9b1c517479de9d3a6ae68abe71af16c25a9d669a3c71b5b6c5cc30d5d45df160beb0010505118dcc3f966c
-  languageName: node
-  linkType: hard
-
 "lines-and-columns@npm:^1.1.6":
   version: 1.2.4
   resolution: "lines-and-columns@npm:1.2.4"
@@ -7368,26 +7350,6 @@ __metadata:
     pbjs: bin/pbjs
     pbts: bin/pbts
   checksum: 10c0/23bff21695e34d92d19cb7f8115e157327af59b7a9154effd916aafefd8633d39e0ea8566c4f0d812193c5a83077448c20d4074aebb5924e0c96f2022a970aa5
-  languageName: node
-  linkType: hard
-
-"protobufjs@npm:^7.5.5":
-  version: 7.5.8
-  resolution: "protobufjs@npm:7.5.8"
-  dependencies:
-    "@protobufjs/aspromise": "npm:^1.1.2"
-    "@protobufjs/base64": "npm:^1.1.2"
-    "@protobufjs/codegen": "npm:^2.0.5"
-    "@protobufjs/eventemitter": "npm:^1.1.0"
-    "@protobufjs/fetch": "npm:^1.1.0"
-    "@protobufjs/float": "npm:^1.0.2"
-    "@protobufjs/inquire": "npm:^1.1.1"
-    "@protobufjs/path": "npm:^1.1.2"
-    "@protobufjs/pool": "npm:^1.1.0"
-    "@protobufjs/utf8": "npm:^1.1.1"
-    "@types/node": "npm:>=13.7.0"
-    long: "npm:^5.0.0"
-  checksum: 10c0/25968259084a634e035f865febd5a31f75bdaee4fda6fba4e14c57019024e7cada859b470eb69350f430fbd0d509c805249b9fe8a6c44a57a0b484a1ef685751
   languageName: node
   linkType: hard
 
