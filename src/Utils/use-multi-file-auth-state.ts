@@ -1,5 +1,5 @@
 import { Mutex } from 'async-mutex'
-import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
@@ -40,6 +40,11 @@ export const useMultiFileAuthState = async (
 
 		return mutex.acquire().then(async release => {
 			try {
+				const tmpPath = `${filePath}.tmp`
+				await writeFile(tmpPath, JSON.stringify(data, BufferJSON.replacer))
+				await rename(tmpPath, filePath)
+			} catch {
+				// Fallback to direct write if rename fails (e.g. cross-device)
 				await writeFile(filePath, JSON.stringify(data, BufferJSON.replacer))
 			} finally {
 				release()
