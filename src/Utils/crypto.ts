@@ -4,6 +4,10 @@ import { KEY_BUNDLE_TYPE } from '../Defaults'
 import type { KeyPair } from '../Types'
 export { md5, hkdf } from 'whatsapp-rust-bridge'
 
+const libsignalCurve = curve as typeof curve & {
+	getPublicFromPrivateKey(privateKey: Uint8Array): Uint8Array
+}
+
 // insure browser & node compatibility
 const { subtle } = globalThis.crypto
 
@@ -20,6 +24,8 @@ export const Curve = {
 			public: Buffer.from(pubKey.slice(1))
 		}
 	},
+	publicKeyFromPrivate: (privateKey: Uint8Array) =>
+		Buffer.from(libsignalCurve.getPublicFromPrivateKey(privateKey).slice(1)),
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
 		const shared = curve.calculateAgreement(generateSignalPubKey(publicKey), privateKey)
 		return Buffer.from(shared)
