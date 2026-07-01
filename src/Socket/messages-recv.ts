@@ -12,6 +12,8 @@ import {
 } from '../Defaults'
 import type {
 	GroupParticipant,
+	LIDMapping,
+	LIDMigrationUpdate,
 	MessageReceiptType,
 	MessageRelayOptions,
 	MessageUserReceipt,
@@ -47,6 +49,7 @@ import {
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
+	resolveContactPictureIdentity,
 	SERVER_ERROR_CODES,
 	toNumber,
 	unixTimestampSeconds,
@@ -75,6 +78,7 @@ import {
 	getBinaryNodeChildren,
 	getBinaryNodeChildString,
 	getBinaryNodeChildUInt,
+	isHostedLidUser,
 	isJidGroup,
 	isJidNewsletter,
 	isJidStatusBroadcast,
@@ -139,6 +143,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -740,7 +745,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			logger.debug({ jid: normalizedJid, senderTimestamp: senderTs }, 'identity changed, re-issuing tctoken')
-			const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 			const issueJid = await resolveIssuanceJid(
 				normalizedJid,
 				sock.serverProps.lidTrustedTokenIssueToLid,
@@ -798,12 +802,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const handleGroupNotification = (fullNode: BinaryNode, child: BinaryNode, msg: Partial<WAMessage>) => {
-		// TODO: Support PN/LID (Here is only LID now)
-
+	const handleGroupNotification = async (fullNode: BinaryNode, child: BinaryNode, msg: Partial<WAMessage>) => {
+		const lidPnMappings: LIDMapping[] = []
 		const actingParticipantLid = fullNode.attrs.participant
 		const actingParticipantPn = fullNode.attrs.participant_pn
 		const actingParticipantUsername = fullNode.attrs.participant_username
+		if (actingParticipantLid && actingParticipantPn && isLidUser(actingParticipantLid) && isPnUser(actingParticipantPn)) {
+			lidPnMappings.push({ lid: actingParticipantLid, pn: actingParticipantPn })
+		}
 
 		const affectedParticipantLid = getBinaryNodeChild(child, 'participant')?.attrs?.jid || actingParticipantLid!
 		const affectedParticipantPn = getBinaryNodeChild(child, 'participant')?.attrs?.phone_number || actingParticipantPn!
@@ -815,6 +821,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg.messageStubType = WAMessageStubType.GROUP_CREATE
 				msg.messageStubParameters = [metadata.subject]
 				msg.key = { participant: metadata.owner, participantAlt: metadata.ownerPn }
+				if (metadata.owner && metadata.ownerPn && isLidUser(metadata.owner) && isPnUser(metadata.ownerPn)) {
+					lidPnMappings.push({ lid: metadata.owner, pn: metadata.ownerPn })
+				}
 
 				ev.emit('chats.upsert', [
 					{
@@ -855,11 +864,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg.messageStubType = WAMessageStubType[stubType as keyof typeof WAMessageStubType]
 
 				const participants = getBinaryNodeChildren(child, 'participant').map(({ attrs }) => {
-					// TODO: Store LID MAPPINGS
+					const participantJid = attrs.jid
+					const phoneNumber = isLidUser(participantJid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined
+					const lid = isPnUser(participantJid) && isLidUser(attrs.lid) ? attrs.lid : undefined
+
+					if (participantJid && phoneNumber) {
+						lidPnMappings.push({ lid: participantJid, pn: phoneNumber })
+					} else if (participantJid && lid) {
+						lidPnMappings.push({ lid, pn: participantJid })
+					}
+
 					return {
-						id: attrs.jid!,
-						phoneNumber: isLidUser(attrs.jid) && isPnUser(attrs.phone_number) ? attrs.phone_number : undefined,
-						lid: isPnUser(attrs.jid) && isLidUser(attrs.lid) ? attrs.lid : undefined,
+						id: participantJid!,
+						phoneNumber,
+						lid,
 						username: attrs.participant_username || attrs.username || undefined,
 						admin: (attrs.type || null) as GroupParticipant['admin']
 					}
@@ -919,6 +937,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'created_membership_requests':
 				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+				if (isLidUser(affectedParticipantLid) && isPnUser(affectedParticipantPn)) {
+					lidPnMappings.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
+				}
+
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipantPn }),
 					'created',
@@ -927,13 +949,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'revoked_membership_requests':
 				const isDenied = areJidsSameUser(affectedParticipantLid, actingParticipantLid)
-				// TODO: LIDMAPPING SUPPORT
 				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+				if (isLidUser(affectedParticipantLid) && isPnUser(affectedParticipantPn)) {
+					lidPnMappings.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
+				}
+
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipantPn }),
 					isDenied ? 'revoked' : 'rejected'
 				]
 				break
+		}
+
+		if (lidPnMappings.length) {
+			await signalRepository.lidMapping
+				.storeLIDPNMappings(lidPnMappings)
+				.catch(err => logger.warn({ err, count: lidPnMappings.length }, 'failed to store LID-PN mappings from group notification'))
 		}
 	}
 
@@ -1046,8 +1077,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				await handleMexNotification(node)
 				break
 			case 'w:gp2':
-				// TODO: HANDLE PARTICIPANT_PN
-				handleGroupNotification(node, child!, result)
+				await handleGroupNotification(node, child!, result)
 				break
 			case 'mediaretry':
 				const event = decodeMediaRetryNode(node)
@@ -1072,34 +1102,41 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				break
-			case 'picture':
+			case 'picture': {
 				const setPicture = getBinaryNodeChild(node, 'set')
 				const delPicture = getBinaryNodeChild(node, 'delete')
-
-				// TODO: WAJIDHASH stuff proper support inhouse
-				ev.emit('contacts.update', [
-					{
-						id: jidNormalizedUser(node?.attrs?.from) || (setPicture || delPicture)?.attrs?.hash || '',
-						imgUrl: setPicture ? 'changed' : 'removed'
-					}
-				])
+				const pictureNode = setPicture || delPicture
+				const pictureImgUrl = setPicture ? 'changed' : 'removed'
 
 				if (isJidGroup(from)) {
-					const node = setPicture || delPicture
+					// group icon change: `from` is the group jid, never resolve LID<->PN
+					ev.emit('contacts.update', [{ id: from, imgUrl: pictureImgUrl }])
+
 					result.messageStubType = WAMessageStubType.GROUP_CHANGE_ICON
 
 					if (setPicture) {
 						result.messageStubParameters = [setPicture.attrs.id!]
 					}
 
-					result.participant = node?.attrs.author
+					result.participant = pictureNode?.attrs.author
 					result.key = {
 						...(result.key || {}),
-						participant: setPicture?.attrs.author
+						participant: pictureNode?.attrs.author
 					}
+				} else if (from) {
+					// individual contact picture change: enrich with LID<->PN so consumers can
+					// correlate the change with a cached contact regardless of addressing form
+					const identity = await resolveContactPictureIdentity(from, {
+						getPNForLID,
+						getLIDForPN,
+						meId: authState.creds.me?.id,
+						meLid: authState.creds.me?.lid
+					})
+					ev.emit('contacts.update', [{ ...identity, imgUrl: pictureImgUrl }])
 				}
 
 				break
+			}
 			case 'account_sync':
 				if (child!.tag === 'disappearing_mode') {
 					const newDuration = +child!.attrs.duration!
@@ -1845,8 +1882,52 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const handleLidRefreshAck = async (attrs: BinaryNode['attrs']) => {
+		// NOTE: Yes, it is a string right from the WhatsApp x_x
+		const refreshLidTrue = 'true'
+		if (!config.enableLidMigrationSafety || attrs['refresh_lid'] !== refreshLidTrue) return
+
+		const oldLid = attrs.from || attrs.remoteJid
+		if (!oldLid || (!isLidUser(oldLid) && !isHostedLidUser(oldLid))) {
+			logger.warn({ attrs }, `received 'refresh_lid' ack without a LID sender`)
+			return
+		}
+
+		let pn: string | undefined
+		let newLid: string | undefined
+
+		try {
+			pn = (await signalRepository.lidMapping.getPNForLID(oldLid)) || undefined
+
+			if (pn && config.refreshMappingOnLidMigration) {
+				const refreshedLid = await signalRepository.lidMapping.getLIDForPN(pn, { force: true })
+				if (refreshedLid && !areJidsSameUser(refreshedLid, oldLid)) {
+					newLid = refreshedLid
+					await signalRepository
+						.migrateSession(pn, newLid)
+						.catch(err =>
+							logger.warn({ err, pn, oldLid, newLid }, `failed to migrate Signal session after 'refresh_lid' ack`)
+						)
+				}
+			}
+		} catch (err) {
+			logger.warn({ err, oldLid }, `failed to refresh LID mapping after 'refresh_lid' ack`)
+		}
+
+		const migration: LIDMigrationUpdate = {
+			oldLid,
+			reason: 'ack-refresh-lid',
+			pn,
+			newLid,
+			messageId: attrs.id
+		}
+
+		ev.emit('lid-migration.update', migration)
+	}
+
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
 		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
+		await handleLidRefreshAck(attrs)
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
 		// // current hypothesis is that if pash is sent in the ack
@@ -1883,7 +1964,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					inFlight463Recoveries.add(ackFrom)
 					void (async () => {
 						try {
-							const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 							const tcStorageJid = await resolveTcTokenJid(ackFrom, getLIDForPN)
 							const issueJid = await resolveIssuanceJid(
 								ackFrom,

@@ -1,12 +1,15 @@
 import { LRUCache } from 'lru-cache'
-import type { LIDMapping, SignalKeyStoreWithTransaction } from '../Types'
+import type { LIDMapping, OptionsWithForce, SignalKeyStoreWithTransaction } from '../Types'
 import type { ILogger } from '../Utils/logger'
 import { isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary'
 
 export class LIDMappingStore {
+	// `max` bounds the cache and `ttlAutopurge: false` drops the per-entry timer
+	// (TTL is checked lazily on get); evicted entries fall back to the DB.
 	private readonly mappingCache = new LRUCache<string, string>({
-		ttl: 3 * 24 * 60 * 60 * 1000, // 7 days
-		ttlAutopurge: true,
+		max: 10000,
+		ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
+		ttlAutopurge: false,
 		updateAgeOnGet: true
 	})
 	private readonly keys: SignalKeyStoreWithTransaction
@@ -105,15 +108,16 @@ export class LIDMappingStore {
 		}
 	}
 
-	async getLIDForPN(pn: string): Promise<string | null> {
-		return (await this.getLIDsForPNs([pn]))?.[0]?.lid || null
+	async getLIDForPN(pn: string, options: OptionsWithForce = {}): Promise<string | null> {
+		return (await this.getLIDsForPNs([pn], options))?.[0]?.lid || null
 	}
 
-	async getLIDsForPNs(pns: string[]): Promise<LIDMapping[] | null> {
+	async getLIDsForPNs(pns: string[], { force }: OptionsWithForce = {}): Promise<LIDMapping[] | null> {
 		if (pns.length === 0) return null
 
 		const sortedPns = [...new Set(pns)].sort()
-		const cacheKey = sortedPns.join(',')
+		const forceCachePrefix = 'force'
+		const cacheKey = `${force ? `${forceCachePrefix}:` : ''}${sortedPns.join(',')}`
 
 		const inflight = this.inflightLIDLookups.get(cacheKey)
 		if (inflight) {
@@ -121,7 +125,7 @@ export class LIDMappingStore {
 			return inflight
 		}
 
-		const promise = this._getLIDsForPNsImpl(pns)
+		const promise = this._getLIDsForPNsImpl(pns, { force })
 		this.inflightLIDLookups.set(cacheKey, promise)
 
 		try {
@@ -131,7 +135,7 @@ export class LIDMappingStore {
 		}
 	}
 
-	private async _getLIDsForPNsImpl(pns: string[]): Promise<LIDMapping[] | null> {
+	private async _getLIDsForPNsImpl(pns: string[], { force }: OptionsWithForce = {}): Promise<LIDMapping[] | null> {
 		const usyncFetch: { [_: string]: number[] } = {}
 		const successfulPairs: { [_: string]: LIDMapping } = {}
 		const pending: Array<{ pn: string; pnUser: string; decoded: ReturnType<typeof jidDecode> }> = []
@@ -161,7 +165,7 @@ export class LIDMappingStore {
 			if (!decoded) continue
 
 			const pnUser = decoded.user
-			const cached = this.mappingCache.get(`pn:${pnUser}`)
+			const cached = force ? undefined : this.mappingCache.get(`pn:${pnUser}`)
 			if (cached && typeof cached === 'string') {
 				if (!addResolvedPair(pn, decoded, cached)) {
 					this.logger.warn(`Invalid entry for ${pn} (pair not resolved)`)
@@ -176,17 +180,19 @@ export class LIDMappingStore {
 
 		if (pending.length) {
 			const pnUsers = [...new Set(pending.map(item => item.pnUser))]
-			const stored = await this.keys.get('lid-mapping', pnUsers)
-			for (const pnUser of pnUsers) {
-				const lidUser = stored[pnUser]
-				if (lidUser && typeof lidUser === 'string') {
-					this.mappingCache.set(`pn:${pnUser}`, lidUser)
-					this.mappingCache.set(`lid:${lidUser}`, pnUser)
+			if (!force) {
+				const stored = await this.keys.get('lid-mapping', pnUsers)
+				for (const pnUser of pnUsers) {
+					const lidUser = stored[pnUser]
+					if (lidUser && typeof lidUser === 'string') {
+						this.mappingCache.set(`pn:${pnUser}`, lidUser)
+						this.mappingCache.set(`lid:${lidUser}`, pnUser)
+					}
 				}
 			}
 
 			for (const { pn, pnUser, decoded } of pending) {
-				const cached = this.mappingCache.get(`pn:${pnUser}`)
+				const cached = force ? undefined : this.mappingCache.get(`pn:${pnUser}`)
 				if (cached && typeof cached === 'string') {
 					if (!addResolvedPair(pn, decoded, cached)) {
 						this.logger.warn(`Invalid entry for ${pn} (pair not resolved)`)

@@ -109,6 +109,12 @@ export type SocketConfig = {
 	/** Enable recent message caching for retry handling */
 	enableRecentMessageCache: boolean
 
+	/** Handle ACKs with 'refresh_lid': 'true', emit 'lid-migration.update' */
+	enableLidMigrationSafety: boolean
+
+	/** Force-refresh PN-->LID mappings when a refresh_lid ACK is received */
+	refreshMappingOnLidMigration: boolean
+
 	/**
 	 * Timeout multiplier applied when a proxy agent is configured.
 	 * All query timeouts are multiplied by this factor when `agent` is set.

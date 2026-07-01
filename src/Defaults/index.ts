@@ -84,6 +84,8 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	generateHighQualityLinkPreview: false,
 	enableAutoSessionRecreation: true,
 	enableRecentMessageCache: true,
+	enableLidMigrationSafety: true,
+	refreshMappingOnLidMigration: true,
 	proxyTimeoutMultiplier: 1.5,
 	maxConsecutiveTimeouts: 3,
 	initialSyncTimeoutMs: 20_000,

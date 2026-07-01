@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh --version)",
+      "PowerShell(gh --version 2>&1)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:patch-diff.githubusercontent.com)",
+      "Bash(curl -sL \"https://patch-diff.githubusercontent.com/raw/WhiskeySockets/Baileys/pull/2661.diff\" -o /c/Users/gabri/AppData/Local/Temp/claude/c--Users-gabri-OneDrive-Documentos-Projetos-VoxuyBaileys/05a8c984-d4af-4c3f-b17f-b0afc9023625/scratchpad/pr2661.diff)",
+      "Read(//c/Users/gabri/AppData/Local/Temp/claude/c--Users-gabri-OneDrive-Documentos-Projetos-VoxuyBaileys/05a8c984-d4af-4c3f-b17f-b0afc9023625/scratchpad/**)",
+      "Bash(npx jest *)",
+      "Bash(node --experimental-vm-modules ./node_modules/.bin/jest --testMatch '**/*.test.ts' src/__tests__/Signal/lid-mapping.test.ts)",
+      "Bash(npx eslint *)",
+      "Bash(curl -sL \"https://patch-diff.githubusercontent.com/raw/WhiskeySockets/Baileys/pull/2640.diff\" -o pr2640.diff)",
+      "Bash(curl -sL \"https://patch-diff.githubusercontent.com/raw/WhiskeySockets/Baileys/pull/2617.diff\" -o pr2617.diff)",
+      "Bash(curl -sL \"https://patch-diff.githubusercontent.com/raw/WhiskeySockets/Baileys/pull/2403.diff\" -o pr2403.diff)",
+      "Bash(curl -sL \"https://patch-diff.githubusercontent.com/raw/WhiskeySockets/Baileys/pull/2614.diff\" -o pr2614.diff)"
+    ]
+  }
+}
