@@ -127,6 +127,41 @@ type TcTokenParams = {
 	getLIDForPN: (pn: string) => Promise<string | null>
 }
 
+type TcTokenEntry = {
+	token: Buffer
+	timestamp?: string | number
+}
+
+/**
+ * Fetch and validate the stored tctoken for a jid. Clears expired/unusable entries as a
+ * side effect (preserving `senderTimestamp` for `shouldSendNewTcToken()`'s dedupe state).
+ * Returns undefined when there's no usable token.
+ */
+async function getTcTokenEntry(
+	authState: { keys: SignalKeyStoreWithTransaction },
+	jid: string,
+	getLIDForPN: (pn: string) => Promise<string | null>
+): Promise<TcTokenEntry | undefined> {
+	const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+	const tcTokenData = await authState.keys.get('tctoken', [storageJid])
+	const entry = tcTokenData?.[storageJid]
+	const tcTokenBuffer = entry?.token
+
+	if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
+		if (tcTokenBuffer) {
+			const cleared =
+				entry?.senderTimestamp !== undefined
+					? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
+					: null
+			await authState.keys.set({ tctoken: { [storageJid]: cleared } })
+		}
+
+		return undefined
+	}
+
+	return { token: tcTokenBuffer, timestamp: entry?.timestamp }
+}
+
 export async function buildTcTokenFromJid({
 	authState,
 	jid,
@@ -134,35 +169,51 @@ export async function buildTcTokenFromJid({
 	getLIDForPN
 }: TcTokenParams): Promise<BinaryNode[] | undefined> {
 	try {
-		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
-		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
-		const entry = tcTokenData?.[storageJid]
-		const tcTokenBuffer = entry?.token
-
-		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
-			if (tcTokenBuffer) {
-				// Preserve senderTimestamp so shouldSendNewTcToken() keeps its dedupe state
-				// after we drop the unusable peer token. Only wipe the record entirely when
-				// there's nothing worth keeping.
-				const cleared =
-					entry?.senderTimestamp !== undefined
-						? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
-						: null
-				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
-			}
-
+		const entry = await getTcTokenEntry(authState, jid, getLIDForPN)
+		if (!entry) {
 			return baseContent.length > 0 ? baseContent : undefined
 		}
 
 		baseContent.push({
 			tag: 'tctoken',
 			attrs: {},
-			content: tcTokenBuffer
+			content: entry.token
 		})
 
 		return baseContent
 	} catch (error) {
 		return baseContent.length > 0 ? baseContent : undefined
+	}
+}
+
+/**
+ * Build the `<picture>` query content for `profilePictureUrl`, nesting the tctoken
+ * (with its `t` timestamp attr) as a child of `picture` rather than a sibling — this
+ * matches WA Web's wire format, which the server requires to actually return a URL.
+ */
+export async function buildProfilePictureQueryContent(
+	authState: { keys: SignalKeyStoreWithTransaction },
+	jid: string,
+	type: 'preview' | 'image',
+	getLIDForPN: (pn: string) => Promise<string | null>
+): Promise<BinaryNode[] | undefined> {
+	try {
+		const entry = await getTcTokenEntry(authState, jid, getLIDForPN)
+		const pictureNode: BinaryNode = { tag: 'picture', attrs: { type, query: 'url' } }
+
+		if (entry) {
+			pictureNode.content = [
+				{
+					tag: 'tctoken',
+					attrs: entry.timestamp !== undefined ? { t: String(entry.timestamp) } : {},
+					content: entry.token
+				}
+			]
+		}
+
+		return [pictureNode]
+	} catch (error) {
+		return undefined
 	}
 }
 

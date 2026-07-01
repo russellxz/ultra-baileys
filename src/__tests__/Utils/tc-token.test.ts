@@ -3,6 +3,7 @@ import { type SignalKeyStoreWithTransaction } from '../../Types'
 import { SERVER_ERROR_CODES } from '../../Utils'
 import {
 	buildMergedTcTokenIndexWrite,
+	buildProfilePictureQueryContent,
 	buildTcTokenFromJid,
 	isTcTokenExpired,
 	readTcTokenIndex,
@@ -522,6 +523,54 @@ describe('buildTcTokenFromJid', () => {
 		mockKeys.get.mockResolvedValue({ [TEST_JID]: { token: VALID_TOKEN } })
 
 		const result = await buildTcTokenFromJid({ authState: { keys: mockKeys }, getLIDForPN: noopGetLID, jid: TEST_JID })
+
+		expect(result).toBeUndefined()
+	})
+})
+
+describe('buildProfilePictureQueryContent', () => {
+	const TEST_JID = 'user@s.whatsapp.net'
+	const VALID_TOKEN = Buffer.from([4, 1, 33, 254, 110])
+	const RECENT_TS = String(nowSeconds() - 86400) // 1 day ago
+	const noopGetLID = async (): Promise<string | null> => null
+
+	let mockKeys: jest.Mocked<SignalKeyStoreWithTransaction>
+
+	beforeEach(() => {
+		mockKeys = createMockKeys()
+	})
+
+	it('nests tctoken with a t timestamp attr inside the picture node', async () => {
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({ [TEST_JID]: { token: VALID_TOKEN, timestamp: RECENT_TS } })
+
+		const result = await buildProfilePictureQueryContent({ keys: mockKeys }, TEST_JID, 'preview', noopGetLID)
+
+		expect(result).toHaveLength(1)
+		const pictureNode = result![0]!
+		expect(pictureNode.tag).toBe('picture')
+		expect(pictureNode.attrs).toEqual({ type: 'preview', query: 'url' })
+		expect(Array.isArray(pictureNode.content)).toBe(true)
+		const tcTokenNode = (pictureNode.content as BinaryNode[])[0]!
+		expect(tcTokenNode.tag).toBe('tctoken')
+		expect(tcTokenNode.attrs).toEqual({ t: RECENT_TS })
+		expect(tcTokenNode.content).toBe(VALID_TOKEN)
+	})
+
+	it('returns a bare picture node (no content) when there is no valid token', async () => {
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({})
+
+		const result = await buildProfilePictureQueryContent({ keys: mockKeys }, TEST_JID, 'image', noopGetLID)
+
+		expect(result).toEqual([{ tag: 'picture', attrs: { type: 'image', query: 'url' }, content: undefined }])
+	})
+
+	it('returns undefined on key store errors', async () => {
+		// @ts-ignore
+		mockKeys.get.mockRejectedValueOnce(new Error('database error'))
+
+		const result = await buildProfilePictureQueryContent({ keys: mockKeys }, TEST_JID, 'preview', noopGetLID)
 
 		expect(result).toBeUndefined()
 	})
