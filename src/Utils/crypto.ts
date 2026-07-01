@@ -25,6 +25,7 @@ export const Curve = {
 		}
 	},
 	publicKeyFromPrivate: (privateKey: Uint8Array) =>
+		// remove version byte, matching generateKeyPair's public-key convention
 		Buffer.from(libsignalCurve.getPublicFromPrivateKey(privateKey).slice(1)),
 	sharedKey: (privateKey: Uint8Array, publicKey: Uint8Array) => {
 		const shared = curve.calculateAgreement(generateSignalPubKey(publicKey), privateKey)
