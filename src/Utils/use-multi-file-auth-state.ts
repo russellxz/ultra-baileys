@@ -1,5 +1,5 @@
 import { Mutex } from 'async-mutex'
-import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
@@ -39,8 +39,23 @@ export const useMultiFileAuthState = async (
 		const mutex = getFileLock(filePath)
 
 		return mutex.acquire().then(async release => {
+			const tmpPath = `${filePath}.tmp`
+			// Preserve restrictive permissions from the existing auth file
+			const existingStat = await stat(filePath).catch(() => undefined)
+			await writeFile(
+				tmpPath,
+				JSON.stringify(data, BufferJSON.replacer),
+				existingStat ? { mode: existingStat.mode & 0o777 } : undefined,
+			)
+			// Atomic rename; if it fails (e.g. cross-device), fall back to direct write
 			try {
-				await writeFile(filePath, JSON.stringify(data, BufferJSON.replacer))
+				await rename(tmpPath, filePath)
+			} catch {
+				await writeFile(
+					filePath,
+					JSON.stringify(data, BufferJSON.replacer),
+					existingStat ? { mode: existingStat.mode & 0o777 } : undefined,
+				)
 			} finally {
 				release()
 			}
