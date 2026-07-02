@@ -75,7 +75,8 @@ export const generateLoginNode = (userJid: string, config: SocketConfig): proto.
 	const { user, device } = jidDecode(userJid)!
 	const payload: proto.IClientPayload = {
 		...getClientPayload(config),
-		passive: true,
+		// Existing companion sessions need an active login. Passive login can be rejected with 428.
+		passive: false,
 		pull: true,
 		username: +user,
 		device: device,
