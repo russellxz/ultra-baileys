@@ -30,6 +30,25 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
+export type WAUsernameQuery =
+	| string
+	| {
+			username: string
+			usernameKey?: string
+			lid?: string
+	  }
+
+export type WAUsernameLookupResult = {
+	username: string
+	jid: string
+	exists: boolean
+}
+
+export type WAUsernameInfo = {
+	jid: string
+	username?: string
+}
+
 export type SocketConfig = {
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL

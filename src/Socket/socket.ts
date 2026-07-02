@@ -19,7 +19,10 @@ import {
 	QueryIds,
 	ReachoutTimelockEnforcementType,
 	type ReachoutTimelockState,
-	type SocketConfig
+	type SocketConfig,
+	type WAUsernameInfo,
+	type WAUsernameLookupResult,
+	type WAUsernameQuery
 } from '../Types'
 import { DisconnectReason, XWAPaths } from '../Types'
 import {
@@ -352,6 +355,72 @@ export const makeSocket = (config: SocketConfig) => {
 		if (results) {
 			return results.list.filter(a => !!a.contact).map(({ contact, id }) => ({ jid: id, exists: contact as boolean }))
 		}
+	}
+
+	const normalizeUsernameQuery = (query: WAUsernameQuery) => {
+		const username = (typeof query === 'string' ? query : query.username).trim().replace(/^@/, '')
+		if (!username) {
+			throw new Boom('Username cannot be empty', { statusCode: 400 })
+		}
+
+		return {
+			username,
+			usernameKey: typeof query === 'string' ? undefined : query.usernameKey,
+			lid: typeof query === 'string' ? undefined : query.lid
+		}
+	}
+
+	const onWhatsAppUsername = async (...queries: WAUsernameQuery[]): Promise<WAUsernameLookupResult[]> => {
+		const usernameQueries = queries.map(normalizeUsernameQuery)
+		if (usernameQueries.length === 0) {
+			return []
+		}
+
+		const usyncQuery = new USyncQuery().withContactProtocol().withUsernameProtocol()
+		for (const { username, usernameKey, lid } of usernameQueries) {
+			const user = new USyncUser().withUsername(username)
+			if (usernameKey) {
+				user.withUsernameKey(usernameKey)
+			}
+
+			if (lid) {
+				user.withLid(lid)
+			}
+
+			usyncQuery.withUser(user)
+		}
+
+		const results = await executeUSyncQuery(usyncQuery)
+		if (!results) {
+			return []
+		}
+
+		return results.list.map((result, index) => ({
+			username: typeof result.username === 'string' ? result.username : usernameQueries[index]?.username || '',
+			jid: result.id,
+			exists: result.contact === true
+		}))
+	}
+
+	const fetchUsername = async (...jids: string[]): Promise<WAUsernameInfo[]> => {
+		const usyncQuery = new USyncQuery().withUsernameProtocol()
+		for (const jid of jids) {
+			usyncQuery.withUser(new USyncUser().withId(jid))
+		}
+
+		if (usyncQuery.users.length === 0) {
+			return []
+		}
+
+		const results = await executeUSyncQuery(usyncQuery)
+		if (!results) {
+			return []
+		}
+
+		return results.list.map(({ id, username }) => ({
+			jid: id,
+			username: typeof username === 'string' ? username : undefined
+		}))
 	}
 
 	const pnFromLIDUSync = async (jids: string[]): Promise<LIDMapping[] | undefined> => {
@@ -1184,6 +1253,8 @@ export const makeSocket = (config: SocketConfig) => {
 		sendWAMBuffer,
 		executeUSyncQuery,
 		onWhatsApp,
+		onWhatsAppUsername,
+		fetchUsername,
 		fetchAccountReachoutTimelock,
 		fetchNewChatMessageCap
 	}

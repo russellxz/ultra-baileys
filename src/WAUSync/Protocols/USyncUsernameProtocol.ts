@@ -20,7 +20,13 @@ export class USyncUsernameProtocol implements USyncQueryProtocol {
 	parser(node: BinaryNode): string | null {
 		if (node.tag === 'username') {
 			assertNodeErrorFree(node)
-			return typeof node.content === 'string' ? node.content : null
+			if (typeof node.content === 'string') {
+				return node.content
+			}
+
+			if (node.content instanceof Uint8Array) {
+				return Buffer.from(node.content).toString('utf-8')
+			}
 		}
 
 		return null
