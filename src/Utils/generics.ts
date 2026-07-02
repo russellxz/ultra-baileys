@@ -1,7 +1,8 @@
 import { Boom } from '@hapi/boom'
 import { createHash, randomBytes } from 'crypto'
+import type Long from 'long'
 import { proto } from '../../WAProto/index.js'
-const baileysVersion = [2, 3000, 1027934701]
+const baileysVersion = [2, 3000, 1035194821]
 import type {
 	BaileysEventEmitter,
 	BaileysEventMap,
@@ -45,7 +46,11 @@ export const BufferJSON = {
 }
 
 export const getKeyAuthor = (key: WAMessageKey | undefined | null, meId = 'me') =>
-	(key?.fromMe ? meId : key?.participant || key?.remoteJid) || ''
+	(key?.fromMe ? meId : key?.participantAlt || key?.remoteJidAlt || key?.participant || key?.remoteJid) || ''
+
+export const isStringNullOrEmpty = (value: string | null | undefined): value is null | undefined | '' =>
+	// eslint-disable-next-line eqeqeq
+	value == null || value === ''
 
 export const writeRandomPadMax16 = (msg: Uint8Array) => {
 	const pad = randomBytes(1)
@@ -386,6 +391,15 @@ export const getCallStatusFromNode = ({ tag, attrs }: BinaryNode) => {
 				status = 'terminate'
 			}
 
+			break
+		case 'preaccept':
+			status = 'preaccept'
+			break
+		case 'transport':
+			status = 'transport'
+			break
+		case 'relaylatency':
+			status = 'relaylatency'
 			break
 		case 'reject':
 			status = 'reject'
