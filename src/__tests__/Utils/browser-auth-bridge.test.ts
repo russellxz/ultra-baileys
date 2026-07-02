@@ -153,13 +153,22 @@ describe('writeBrowserAuthToMultiFile', () => {
 
 describe('extractWhatsAppWebAuthFromBrowser', () => {
 	it('fails fast when required browser localStorage is missing', async () => {
-		Object.defineProperty(globalThis, 'localStorage', {
-			configurable: true,
-			value: {
-				getItem: () => null
-			}
-		})
+		const localStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+		try {
+			Object.defineProperty(globalThis, 'localStorage', {
+				configurable: true,
+				value: {
+					getItem: () => null
+				}
+			})
 
-		await expect(extractWhatsAppWebAuthFromBrowser()).rejects.toThrow('last-wid-md')
+			await expect(extractWhatsAppWebAuthFromBrowser()).rejects.toThrow('last-wid-md')
+		} finally {
+			if (localStorageDescriptor) {
+				Object.defineProperty(globalThis, 'localStorage', localStorageDescriptor)
+			} else {
+				delete (globalThis as { localStorage?: unknown }).localStorage
+			}
+		}
 	})
 })
