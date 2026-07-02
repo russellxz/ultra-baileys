@@ -306,6 +306,30 @@ sock.ev.on('creds.update', saveCreds)
 > [!NOTE]
 > When a message is received/sent, due to signal sessions needing updating, the auth keys (`authState.keys`) will update. Whenever that happens, you must save the updated keys (`authState.keys.set()` is called). Not doing so will prevent your messages from reaching the recipient & cause other unexpected consequences. The `useMultiFileAuthState` function automatically takes care of that, but for any other serious implementation -- you will need to be very careful with the key state management.
 
+### Importing an already-authenticated WhatsApp Web session
+
+Some accounts can require WhatsApp's passkey flow when linking a new companion device. Baileys cannot produce the browser WebAuthn assertion for a fresh headless link, but you can bridge a session that is already authenticated in WhatsApp Web.
+
+Run the extractor inside the `https://web.whatsapp.com` page context, then write the converted auth state:
+
+```ts
+import makeWASocket, {
+	extractWhatsAppWebAuthFromBrowser,
+	useMultiFileAuthState,
+	writeBrowserAuthToMultiFile
+} from '@whiskeysockets/baileys'
+
+// Example with Puppeteer or Playwright after the user has completed WhatsApp Web login.
+const extract = await page.evaluate(extractWhatsAppWebAuthFromBrowser)
+await writeBrowserAuthToMultiFile('auth_info_baileys', extract, { name: 'My App' })
+
+const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
+const sock = makeWASocket({ auth: state })
+sock.ev.on('creds.update', saveCreds)
+```
+
+The converter tests all decrypted `WANoiseInfo` IV candidates and selects the Noise private/public key pair by deriving the public key from each private candidate. This avoids relying on a brittle field-order assumption in WhatsApp Web storage.
+
 ## Handling Events
 
 - Baileys uses the EventEmitter syntax for events.
