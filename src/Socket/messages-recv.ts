@@ -1129,13 +1129,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'link_code_companion_reg':
 				const linkCodeCompanionReg = getBinaryNodeChild(node, 'link_code_companion_reg')
-				const ref = toRequiredBuffer(getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_ref'))
-				const primaryIdentityPublicKey = toRequiredBuffer(
-					getBinaryNodeChildBuffer(linkCodeCompanionReg, 'primary_identity_pub')
+				const refBuffer = getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_ref')
+				const primaryIdentityPublicKeyBuffer = getBinaryNodeChildBuffer(linkCodeCompanionReg, 'primary_identity_pub')
+				const primaryEphemeralPublicKeyWrappedBuffer = getBinaryNodeChildBuffer(
+					linkCodeCompanionReg,
+					'link_code_pairing_wrapped_primary_ephemeral_pub'
 				)
-				const primaryEphemeralPublicKeyWrapped = toRequiredBuffer(
-					getBinaryNodeChildBuffer(linkCodeCompanionReg, 'link_code_pairing_wrapped_primary_ephemeral_pub')
-				)
+				if (
+					refBuffer === undefined ||
+					primaryIdentityPublicKeyBuffer === undefined ||
+					primaryEphemeralPublicKeyWrappedBuffer === undefined
+				) {
+					logger.debug({ id: node.attrs.id, type: node.attrs.type }, 'skipping empty link code companion registration')
+					break
+				}
+
+				const ref = toRequiredBuffer(refBuffer)
+				const primaryIdentityPublicKey = toRequiredBuffer(primaryIdentityPublicKeyBuffer)
+				const primaryEphemeralPublicKeyWrapped = toRequiredBuffer(primaryEphemeralPublicKeyWrappedBuffer)
 				const codePairingPublicKey = await decipherLinkPublicKey(primaryEphemeralPublicKeyWrapped)
 				const companionSharedKey = Curve.sharedKey(
 					authState.creds.pairingEphemeralKeyPair.private,
