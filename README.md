@@ -61,7 +61,7 @@ yarn add @whiskeysockets/baileys
 
 Use the edge version (no guarantee of stability, but latest fixes + features)
 ```
-yarn add github:KiroFyzu/Baileys
+yarn add github:WhiskeySockets/Baileys
 ```
 
 Then import your code using:
