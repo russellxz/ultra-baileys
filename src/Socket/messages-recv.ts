@@ -41,9 +41,11 @@ import {
 	getCallStatusFromNode,
 	getHistoryMsg,
 	getNextPreKeys,
+	getPlatformType,
 	getStatusFromReceiptType,
 	handleIdentityChange,
 	hkdf,
+	makeShortcakeFlow,
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
@@ -139,6 +141,47 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
+	/**
+	 * Companion side of the WhatsApp "Shortcake" passkey-linking handshake. Only
+	 * created when a `signPasskeyAssertion` is configured; otherwise a server
+	 * forced passkey prologue is just acked (and surfaced via `connection.update`).
+	 */
+	const shortcakeFlow = config.signPasskeyAssertion
+		? makeShortcakeFlow({
+				logger,
+				query,
+				signAssertion: config.signPasskeyAssertion,
+				getCreds: () => authState.creds,
+				updateCreds: patch => ev.emit('creds.update', patch),
+				deviceType: getPlatformType(config.browser[1]),
+				emitVerificationCode: code => logger.debug({ code }, 'shortcake verification code')
+			})
+		: null
+
+	registerSocketEndHandler(() => shortcakeFlow?.clearSession())
+
+	/**
+	 * Handles the server-forced passkey ("Shortcake") prologue. With a configured
+	 * `signPasskeyAssertion` the full handshake runs; without one we surface the
+	 * requirement via `connection.update` and let the notification ack, instead of
+	 * silently stalling, which is what happens today when the server demands a
+	 * passkey after a successful pairing-code `companion_finish`.
+	 */
+	const handleShortcakeNotification = async (node: BinaryNode) => {
+		if (node.attrs.type === 'passkey_prologue_request') {
+			ev.emit('connection.update', { passkeyRequired: { hasSigner: !!shortcakeFlow } })
+		}
+
+		if (shortcakeFlow) {
+			await shortcakeFlow.handleIncomingNotification(node)
+			return
+		}
+
+		if (node.attrs.type === 'passkey_prologue_request') {
+			logger.warn({ id: node.attrs.id }, 'server requested passkey prologue but no signPasskeyAssertion configured')
+		}
+	}
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -1195,6 +1238,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				})
 				authState.creds.registered = true
 				ev.emit('creds.update', authState.creds)
+				break
+			case 'passkey_prologue_request':
+			case 'crsc_continuation':
+				await handleShortcakeNotification(node)
 				break
 			case 'privacy_token':
 				await handlePrivacyTokenNotification(node)

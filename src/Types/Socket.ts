@@ -2,6 +2,7 @@ import type { Agent } from 'https'
 import type { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
 import type { ILogger } from '../Utils/logger'
+import type { ShortcakeAssertionSigner } from '../Utils/shortcake'
 import type { AuthenticationState, LIDMapping, SignalAuthState, TransactionCapabilityOptions } from './Auth'
 import type { GroupMetadata } from './GroupMetadata'
 import { type MediaConnInfo, type WAMessageKey } from './Message'
@@ -150,4 +151,13 @@ export type SocketConfig = {
 		logger: ILogger,
 		pnToLIDFunc?: (jids: string[]) => Promise<LIDMapping[] | undefined>
 	) => SignalRepositoryWithLIDStore
+
+	/**
+	 * External WebAuthn signer. Configuring it enables handling a server-forced
+	 * passkey ("Shortcake") prologue, e.g. when the server demands a passkey
+	 * right after a successful pairing-code `companion_finish`. Called with the
+	 * server's request options; returns the assertion + credential id. The
+	 * credential source (real/virtual authenticator) stays outside the library.
+	 */
+	signPasskeyAssertion?: ShortcakeAssertionSigner
 }
