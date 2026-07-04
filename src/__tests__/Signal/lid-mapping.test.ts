@@ -22,6 +22,39 @@ describe('LIDMappingStore', () => {
 		lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc)
 	})
 
+	describe('getStoredLIDForPN', () => {
+		it('should return a locally stored LID without calling USync', async () => {
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({ '12345': '98765' } as SignalDataTypeMap['lid-mapping'])
+
+			const result = await lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')
+
+			expect(result).toBe('98765@lid')
+			expect(mockKeys.get).toHaveBeenCalledWith('lid-mapping', ['12345'])
+			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+
+		it('should preserve the PN device on a locally stored LID', async () => {
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({ '12345': '98765' } as SignalDataTypeMap['lid-mapping'])
+
+			const result = await lidMappingStore.getStoredLIDForPN('12345:7@s.whatsapp.net')
+
+			expect(result).toBe('98765:7@lid')
+			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+
+		it('should return null when no local mapping is stored', async () => {
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({} as SignalDataTypeMap['lid-mapping'])
+
+			const result = await lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')
+
+			expect(result).toBeNull()
+			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+	})
+
 	describe('getPNForLID', () => {
 		it('should correctly map a standard LID with a hosted device ID back to a standard PN with a hosted device', async () => {
 			const lidWithHostedDevice = `12345:${HOSTED_DEVICE_ID}@lid`

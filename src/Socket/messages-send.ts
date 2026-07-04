@@ -70,6 +70,38 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
+export type MessageSendJid = {
+	jid: string
+	remoteJidAlt?: string
+	addressingMode?: 'lid'
+	additionalAttributes?: BinaryNodeAttributes
+}
+
+export const resolveMessageSendJid = async (
+	jid: string,
+	getStoredLIDForPN: (pn: string) => Promise<string | null>
+): Promise<MessageSendJid> => {
+	if (!isPnUser(jid) && !isHostedPnUser(jid)) {
+		return { jid }
+	}
+
+	const lid = await getStoredLIDForPN(jid)
+	if (!lid || (!isLidUser(lid) && !isHostedLidUser(lid))) {
+		return { jid }
+	}
+
+	const remoteJidAlt = jidNormalizedUser(jid)
+	return {
+		jid: lid,
+		remoteJidAlt,
+		addressingMode: 'lid',
+		additionalAttributes: {
+			addressing_mode: 'lid',
+			recipient_pn: remoteJidAlt
+		}
+	}
+}
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -97,6 +129,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getStoredLIDForPN = signalRepository.lidMapping.getStoredLIDForPN.bind(signalRepository.lidMapping)
 
 	/**
 	 * Set of tctoken storage JIDs with a fire-and-forget `issuePrivacyTokens` IQ in flight.
@@ -1342,7 +1375,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						: disappearingMessagesInChat
 				await groupToggleEphemeral(jid, value)
 			} else {
-				const fullMsg = await generateWAMessage(jid, content, {
+				const resolvedJid = await resolveMessageSendJid(jid, getStoredLIDForPN)
+				const fullMsg = await generateWAMessage(resolvedJid.jid, content, {
 					logger,
 					userJid,
 					getUrlInfo: text =>
@@ -1364,12 +1398,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				})
+				if (resolvedJid.remoteJidAlt) {
+					fullMsg.key.remoteJidAlt = resolvedJid.remoteJidAlt
+				}
+
+				if (resolvedJid.addressingMode) {
+					fullMsg.key.addressingMode = resolvedJid.addressingMode
+				}
+
 				const isEventMsg = 'event' in content && !!content.event
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
 				const isPinMsg = 'pin' in content && !!content.pin
 				const isPollMessage = 'poll' in content && !!content.poll
-				const additionalAttributes: BinaryNodeAttributes = {}
+				const additionalAttributes: BinaryNodeAttributes = { ...(resolvedJid.additionalAttributes || {}) }
 				const additionalNodes: BinaryNode[] = []
 				// required for delete
 				if (isDeleteMsg) {
@@ -1399,7 +1441,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					} as BinaryNode)
 				}
 
-				await relayMessage(jid, fullMsg.message!, {
+				await relayMessage(resolvedJid.jid, fullMsg.message!, {
 					messageId: fullMsg.key.id!,
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
 					additionalAttributes,

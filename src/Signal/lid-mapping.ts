@@ -27,6 +27,40 @@ export class LIDMappingStore {
 		this.logger = logger
 	}
 
+	private getDeviceSpecificLIDForPN(
+		pn: string,
+		decoded: NonNullable<ReturnType<typeof jidDecode>>,
+		lidUser: string
+	): string | null {
+		const normalizedLidUser = lidUser.toString()
+		if (!normalizedLidUser) {
+			this.logger.warn(`Invalid or empty LID user for PN ${pn}: lidUser = "${lidUser}"`)
+			return null
+		}
+
+		const pnDevice = decoded.device !== undefined ? decoded.device : 0
+		return `${normalizedLidUser}${!!pnDevice ? `:${pnDevice}` : ``}@${
+			decoded.server === 'hosted' ? 'hosted.lid' : 'lid'
+		}`
+	}
+
+	private async getStoredLIDUserForPNUser(pnUser: string): Promise<string | null> {
+		const cached = this.mappingCache.get(`pn:${pnUser}`)
+		if (cached && typeof cached === 'string') {
+			return cached
+		}
+
+		const stored = await this.keys.get('lid-mapping', [pnUser])
+		const lidUser = stored[pnUser]
+		if (lidUser && typeof lidUser === 'string') {
+			this.mappingCache.set(`pn:${pnUser}`, lidUser)
+			this.mappingCache.set(`lid:${lidUser}`, pnUser)
+			return lidUser
+		}
+
+		return null
+	}
+
 	async storeLIDPNMappings(pairs: LIDMapping[]): Promise<void> {
 		if (pairs.length === 0) return
 
@@ -109,6 +143,21 @@ export class LIDMappingStore {
 		return (await this.getLIDsForPNs([pn]))?.[0]?.lid || null
 	}
 
+	async getStoredLIDForPN(pn: string): Promise<string | null> {
+		if (!isPnUser(pn) && !isHostedPnUser(pn)) return null
+
+		const decoded = jidDecode(pn)
+		if (!decoded) return null
+
+		const lidUser = await this.getStoredLIDUserForPNUser(decoded.user)
+		if (!lidUser) return null
+
+		const deviceSpecificLid = this.getDeviceSpecificLIDForPN(pn, decoded, lidUser)
+		if (!deviceSpecificLid) return null
+
+		return deviceSpecificLid
+	}
+
 	async getLIDsForPNs(pns: string[]): Promise<LIDMapping[] | null> {
 		if (pns.length === 0) return null
 
@@ -134,21 +183,13 @@ export class LIDMappingStore {
 	private async _getLIDsForPNsImpl(pns: string[]): Promise<LIDMapping[] | null> {
 		const usyncFetch: { [_: string]: number[] } = {}
 		const successfulPairs: { [_: string]: LIDMapping } = {}
-		const pending: Array<{ pn: string; pnUser: string; decoded: ReturnType<typeof jidDecode> }> = []
+		const pending: Array<{ pn: string; pnUser: string; decoded: NonNullable<ReturnType<typeof jidDecode>> }> = []
 
-		const addResolvedPair = (pn: string, decoded: ReturnType<typeof jidDecode>, lidUser: string) => {
-			const normalizedLidUser = lidUser.toString()
-			if (!normalizedLidUser) {
-				this.logger.warn(`Invalid or empty LID user for PN ${pn}: lidUser = "${lidUser}"`)
-				return false
-			}
+		const addResolvedPair = (pn: string, decoded: NonNullable<ReturnType<typeof jidDecode>>, lidUser: string) => {
+			const deviceSpecificLid = this.getDeviceSpecificLIDForPN(pn, decoded, lidUser)
+			if (!deviceSpecificLid) return false
 
-			// Push the PN device ID to the LID to maintain device separation
-			const pnDevice = decoded!.device !== undefined ? decoded!.device : 0
-			const deviceSpecificLid = `${normalizedLidUser}${!!pnDevice ? `:${pnDevice}` : ``}@${
-				decoded!.server === 'hosted' ? 'hosted.lid' : 'lid'
-			}`
-
+			const pnDevice = decoded.device !== undefined ? decoded.device : 0
 			this.logger.trace(`getLIDForPN: ${pn} → ${deviceSpecificLid} (user mapping with device ${pnDevice})`)
 			successfulPairs[pn] = { lid: deviceSpecificLid, pn }
 			return true
@@ -194,7 +235,7 @@ export class LIDMappingStore {
 					}
 				} else {
 					this.logger.trace(`No LID mapping found for PN user ${pnUser}; batch getting from USync`)
-					const device = decoded!.device || 0
+					const device = decoded.device || 0
 					let normalizedPn = jidNormalizedUser(pn)
 					if (isHostedPnUser(normalizedPn)) {
 						normalizedPn = `${pnUser}@s.whatsapp.net`
