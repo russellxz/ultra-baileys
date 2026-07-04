@@ -13,6 +13,20 @@ import { Curve, hmacSign } from './crypto'
 import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
+const isDesktop = (config: SocketConfig) => config.browser[1] === 'Desktop'
+
+const getUserAgentPlatform = (config: SocketConfig): proto.ClientPayload.UserAgent.Platform => {
+	if (config.browser[1].toLocaleLowerCase().includes('android')) {
+		return proto.ClientPayload.UserAgent.Platform.ANDROID
+	}
+
+	if (config.syncFullHistory && isDesktop(config) && config.browser[0] === 'Mac OS') {
+		return proto.ClientPayload.UserAgent.Platform.MACOS
+	}
+
+	return proto.ClientPayload.UserAgent.Platform.WEB
+}
+
 const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 	return {
 		appVersion: {
@@ -20,9 +34,7 @@ const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 			secondary: config.version[1],
 			tertiary: config.version[2]
 		},
-		platform: config.browser[1].toLocaleLowerCase().includes('android')
-			? proto.ClientPayload.UserAgent.Platform.ANDROID
-			: proto.ClientPayload.UserAgent.Platform.WEB,
+		platform: getUserAgentPlatform(config),
 		releaseChannel: proto.ClientPayload.UserAgent.ReleaseChannel.RELEASE,
 		osVersion: '0.1',
 		device: 'Desktop',
@@ -37,16 +49,12 @@ const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 
 const PLATFORM_MAP = {
 	'Mac OS': proto.ClientPayload.WebInfo.WebSubPlatform.DARWIN,
-	Windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN32
+	Windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID
 }
 
 const getWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
 	let webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
-	if (
-		config.syncFullHistory &&
-		PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP] &&
-		config.browser[1] === 'Desktop'
-	) {
+	if (config.syncFullHistory && PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP] && isDesktop(config)) {
 		webSubPlatform = PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP]
 	}
 
