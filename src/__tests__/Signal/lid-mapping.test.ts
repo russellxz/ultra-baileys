@@ -1,15 +1,55 @@
 import { jest } from '@jest/globals'
 import P from 'pino'
 import { LIDMappingStore } from '../../Signal/lid-mapping'
-import type { LIDMapping, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
+import type { LIDMapping, SignalDataSet, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
 
 const HOSTED_DEVICE_ID = 99
 
-const mockKeys: jest.Mocked<SignalKeyStoreWithTransaction> = {
-	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as any,
-	set: jest.fn<SignalKeyStoreWithTransaction['set']>(),
-	transaction: jest.fn<SignalKeyStoreWithTransaction['transaction']>(async (work: () => any) => await work()) as any,
-	isInTransaction: jest.fn<SignalKeyStoreWithTransaction['isInTransaction']>()
+let lidMappingRecords: Record<string, string> = {}
+let getCalls: Array<{ type: keyof SignalDataTypeMap; ids: string[] }> = []
+let setCalls: SignalDataSet[] = []
+let transactionKeys: string[] = []
+
+const setLidMappingRecords = (records: Record<string, string>) => {
+	lidMappingRecords = { ...records }
+}
+
+const mockKeys: SignalKeyStoreWithTransaction = {
+	async get<T extends keyof SignalDataTypeMap>(
+		type: T,
+		ids: string[]
+	): Promise<{ [id: string]: SignalDataTypeMap[T] }> {
+		getCalls.push({ type, ids })
+		const result: { [id: string]: SignalDataTypeMap[T] } = {}
+		if (type === 'lid-mapping') {
+			for (const id of ids) {
+				const value = lidMappingRecords[id]
+				if (value !== undefined) {
+					result[id] = value as SignalDataTypeMap[T]
+				}
+			}
+		}
+
+		return result
+	},
+	async set(data: SignalDataSet): Promise<void> {
+		setCalls.push(data)
+		const mappings = data['lid-mapping']
+		if (!mappings) return
+
+		for (const [id, value] of Object.entries(mappings)) {
+			if (value === null) {
+				delete lidMappingRecords[id]
+			} else {
+				lidMappingRecords[id] = value
+			}
+		}
+	},
+	async transaction<T>(work: () => Promise<T>, key: string): Promise<T> {
+		transactionKeys.push(key)
+		return work()
+	},
+	isInTransaction: () => false
 }
 const logger = P({ level: 'silent' })
 
@@ -19,24 +59,26 @@ describe('LIDMappingStore', () => {
 
 	beforeEach(() => {
 		jest.clearAllMocks()
+		setLidMappingRecords({})
+		getCalls = []
+		setCalls = []
+		transactionKeys = []
 		lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc)
 	})
 
 	describe('getStoredLIDForPN', () => {
 		it('should return a locally stored LID without calling USync', async () => {
-			// @ts-ignore
-			mockKeys.get.mockResolvedValue({ '12345': '98765' } as SignalDataTypeMap['lid-mapping'])
+			setLidMappingRecords({ '12345': '98765' })
 
 			const result = await lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')
 
 			expect(result).toBe('98765@lid')
-			expect(mockKeys.get).toHaveBeenCalledWith('lid-mapping', ['12345'])
+			expect(getCalls).toContainEqual({ type: 'lid-mapping', ids: ['12345'] })
 			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
 		})
 
 		it('should preserve the PN device on a locally stored LID', async () => {
-			// @ts-ignore
-			mockKeys.get.mockResolvedValue({ '12345': '98765' } as SignalDataTypeMap['lid-mapping'])
+			setLidMappingRecords({ '12345': '98765' })
 
 			const result = await lidMappingStore.getStoredLIDForPN('12345:7@s.whatsapp.net')
 
@@ -44,14 +86,42 @@ describe('LIDMappingStore', () => {
 			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
 		})
 
-		it('should return null when no local mapping is stored', async () => {
-			// @ts-ignore
-			mockKeys.get.mockResolvedValue({} as SignalDataTypeMap['lid-mapping'])
+		it('should return a hosted LID for a locally stored hosted PN mapping', async () => {
+			setLidMappingRecords({ '12345': '98765' })
+
+			const result = await lidMappingStore.getStoredLIDForPN('12345@hosted')
+
+			expect(result).toBe('98765@hosted.lid')
+			expect(getCalls).toContainEqual({ type: 'lid-mapping', ids: ['12345'] })
+			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+
+		it('should reject a malformed locally stored LID user', async () => {
+			setLidMappingRecords({ '12345': '98765:7' })
 
 			const result = await lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')
 
 			expect(result).toBeNull()
 			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+
+		it('should return null when no local mapping is stored', async () => {
+			const result = await lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')
+
+			expect(result).toBeNull()
+			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+
+		it('should cache local misses until a mapping is stored', async () => {
+			await expect(lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')).resolves.toBeNull()
+			await expect(lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')).resolves.toBeNull()
+			expect(getCalls).toHaveLength(1)
+
+			await lidMappingStore.storeLIDPNMappings([{ lid: '98765@lid', pn: '12345@s.whatsapp.net' }])
+			await expect(lidMappingStore.getStoredLIDForPN('12345@s.whatsapp.net')).resolves.toBe('98765@lid')
+			expect(getCalls).toHaveLength(2)
+			expect(setCalls).toHaveLength(1)
+			expect(transactionKeys).toEqual(['lid-mapping'])
 		})
 	})
 
@@ -60,8 +130,7 @@ describe('LIDMappingStore', () => {
 			const lidWithHostedDevice = `12345:${HOSTED_DEVICE_ID}@lid`
 			const pnUser = '54321'
 
-			// @ts-ignore
-			mockKeys.get.mockResolvedValue({ [`12345_reverse`]: pnUser } as SignalDataTypeMap['lid-mapping'])
+			setLidMappingRecords({ [`12345_reverse`]: pnUser })
 
 			const result = await lidMappingStore.getPNForLID(lidWithHostedDevice)
 			expect(result).toBe(`${pnUser}:${HOSTED_DEVICE_ID}@s.whatsapp.net`)
@@ -69,9 +138,6 @@ describe('LIDMappingStore', () => {
 
 		it('should return null if no reverse mapping is found', async () => {
 			const lid = 'nonexistent@lid'
-
-			// @ts-ignore
-			mockKeys.get.mockResolvedValue({} as SignalDataTypeMap['lid-mapping']) // Simulate not found in DB
 
 			const result = await lidMappingStore.getPNForLID(lid)
 			expect(result).toBeNull()

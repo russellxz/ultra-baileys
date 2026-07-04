@@ -36,6 +36,7 @@ import {
 	unixTimestampSeconds
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
+import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -79,13 +80,21 @@ export type MessageSendJid = {
 
 export const resolveMessageSendJid = async (
 	jid: string,
-	getStoredLIDForPN: (pn: string) => Promise<string | null>
+	getStoredLIDForPN: (pn: string) => Promise<string | null>,
+	logger?: ILogger
 ): Promise<MessageSendJid> => {
 	if (!isPnUser(jid) && !isHostedPnUser(jid)) {
 		return { jid }
 	}
 
-	const lid = await getStoredLIDForPN(jid)
+	let lid: string | null
+	try {
+		lid = await getStoredLIDForPN(jid)
+	} catch (err) {
+		logger?.debug({ err, jidServer: jidDecode(jid)?.server }, 'failed to resolve stored LID for PN send')
+		return { jid }
+	}
+
 	if (!lid || (!isLidUser(lid) && !isHostedLidUser(lid))) {
 		return { jid }
 	}
@@ -1375,7 +1384,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						: disappearingMessagesInChat
 				await groupToggleEphemeral(jid, value)
 			} else {
-				const resolvedJid = await resolveMessageSendJid(jid, getStoredLIDForPN)
+				const resolvedJid = await resolveMessageSendJid(jid, getStoredLIDForPN, logger)
 				const fullMsg = await generateWAMessage(resolvedJid.jid, content, {
 					logger,
 					userJid,

@@ -27,6 +27,16 @@ describe('resolveMessageSendJid', () => {
 		expect(result).toEqual({ jid: '12345@s.whatsapp.net' })
 	})
 
+	it('should keep the PN destination when the local LID lookup fails', async () => {
+		const getStoredLIDForPN = jest.fn(async (): Promise<string | null> => {
+			throw new Error('key store unavailable')
+		})
+
+		const result = await resolveMessageSendJid('12345@s.whatsapp.net', getStoredLIDForPN)
+
+		expect(result).toEqual({ jid: '12345@s.whatsapp.net' })
+	})
+
 	it('should route a hosted PN send to its locally mapped hosted LID', async () => {
 		const getStoredLIDForPN = jest.fn(async (): Promise<string | null> => '98765@hosted.lid')
 

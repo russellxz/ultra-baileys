@@ -5,7 +5,12 @@ import { isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJI
 
 export class LIDMappingStore {
 	private readonly mappingCache = new LRUCache<string, string>({
-		ttl: 3 * 24 * 60 * 60 * 1000, // 7 days
+		ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
+		ttlAutopurge: true,
+		updateAgeOnGet: true
+	})
+	private readonly missingPNMappingCache = new LRUCache<string, boolean>({
+		ttl: 3 * 24 * 60 * 60 * 1000,
 		ttlAutopurge: true,
 		updateAgeOnGet: true
 	})
@@ -28,20 +33,22 @@ export class LIDMappingStore {
 	}
 
 	private getDeviceSpecificLIDForPN(
-		pn: string,
 		decoded: NonNullable<ReturnType<typeof jidDecode>>,
 		lidUser: string
 	): string | null {
 		const normalizedLidUser = lidUser.toString()
-		if (!normalizedLidUser) {
-			this.logger.warn(`Invalid or empty LID user for PN ${pn}: lidUser = "${lidUser}"`)
+		const lidServer = decoded.server === 'hosted' ? 'hosted.lid' : 'lid'
+		const lidDecoded = jidDecode(`${normalizedLidUser}@${lidServer}`)
+		if (!normalizedLidUser || !lidDecoded || lidDecoded.user !== normalizedLidUser || lidDecoded.server !== lidServer) {
+			this.logger.warn(
+				{ pnServer: decoded.server, lidServer, hasLidUser: !!normalizedLidUser },
+				'Invalid or empty LID user for PN'
+			)
 			return null
 		}
 
 		const pnDevice = decoded.device !== undefined ? decoded.device : 0
-		return `${normalizedLidUser}${!!pnDevice ? `:${pnDevice}` : ``}@${
-			decoded.server === 'hosted' ? 'hosted.lid' : 'lid'
-		}`
+		return `${normalizedLidUser}${!!pnDevice ? `:${pnDevice}` : ``}@${lidServer}`
 	}
 
 	private async getStoredLIDUserForPNUser(pnUser: string): Promise<string | null> {
@@ -50,14 +57,20 @@ export class LIDMappingStore {
 			return cached
 		}
 
+		if (this.missingPNMappingCache.get(pnUser)) {
+			return null
+		}
+
 		const stored = await this.keys.get('lid-mapping', [pnUser])
 		const lidUser = stored[pnUser]
 		if (lidUser && typeof lidUser === 'string') {
 			this.mappingCache.set(`pn:${pnUser}`, lidUser)
 			this.mappingCache.set(`lid:${lidUser}`, pnUser)
+			this.missingPNMappingCache.delete(pnUser)
 			return lidUser
 		}
 
+		this.missingPNMappingCache.set(pnUser, true)
 		return null
 	}
 
@@ -87,6 +100,7 @@ export class LIDMappingStore {
 			const cached = this.mappingCache.get(`pn:${pnUser}`)
 			if (cached) {
 				existingMappings.set(pnUser, cached)
+				this.missingPNMappingCache.delete(pnUser)
 			} else {
 				cacheMissSet.add(pnUser)
 			}
@@ -103,6 +117,7 @@ export class LIDMappingStore {
 					existingMappings.set(pnUser, existingLidUser)
 					this.mappingCache.set(`pn:${pnUser}`, existingLidUser)
 					this.mappingCache.set(`lid:${existingLidUser}`, pnUser)
+					this.missingPNMappingCache.delete(pnUser)
 				}
 			}
 		}
@@ -112,6 +127,7 @@ export class LIDMappingStore {
 			const existingLidUser = existingMappings.get(pnUser)
 			if (existingLidUser === lidUser) {
 				this.logger.debug({ pnUser, lidUser }, 'LID mapping already exists, skipping')
+				this.missingPNMappingCache.delete(pnUser)
 				continue
 			}
 
@@ -136,6 +152,7 @@ export class LIDMappingStore {
 		for (const [pnUser, lidUser] of Object.entries(pairMap)) {
 			this.mappingCache.set(`pn:${pnUser}`, lidUser)
 			this.mappingCache.set(`lid:${lidUser}`, pnUser)
+			this.missingPNMappingCache.delete(pnUser)
 		}
 	}
 
@@ -152,7 +169,7 @@ export class LIDMappingStore {
 		const lidUser = await this.getStoredLIDUserForPNUser(decoded.user)
 		if (!lidUser) return null
 
-		const deviceSpecificLid = this.getDeviceSpecificLIDForPN(pn, decoded, lidUser)
+		const deviceSpecificLid = this.getDeviceSpecificLIDForPN(decoded, lidUser)
 		if (!deviceSpecificLid) return null
 
 		return deviceSpecificLid
@@ -186,7 +203,7 @@ export class LIDMappingStore {
 		const pending: Array<{ pn: string; pnUser: string; decoded: NonNullable<ReturnType<typeof jidDecode>> }> = []
 
 		const addResolvedPair = (pn: string, decoded: NonNullable<ReturnType<typeof jidDecode>>, lidUser: string) => {
-			const deviceSpecificLid = this.getDeviceSpecificLIDForPN(pn, decoded, lidUser)
+			const deviceSpecificLid = this.getDeviceSpecificLIDForPN(decoded, lidUser)
 			if (!deviceSpecificLid) return false
 
 			const pnDevice = decoded.device !== undefined ? decoded.device : 0
@@ -372,5 +389,6 @@ export class LIDMappingStore {
 	 */
 	close(): void {
 		this.mappingCache.clear()
+		this.missingPNMappingCache.clear()
 	}
 }
