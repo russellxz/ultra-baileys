@@ -20,6 +20,7 @@ const getUserAgentPlatform = (config: SocketConfig): proto.ClientPayload.UserAge
 		return proto.ClientPayload.UserAgent.Platform.ANDROID
 	}
 
+	// WA rejects full-history Desktop pairing unless macOS uses its native platform.
 	if (config.syncFullHistory && isDesktop(config) && config.browser[0] === 'Mac OS') {
 		return proto.ClientPayload.UserAgent.Platform.MACOS
 	}
@@ -54,6 +55,7 @@ const PLATFORM_MAP = {
 
 const getWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
 	let webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+	// WA accepts full-history Desktop pairing only with the native web sub-platforms.
 	if (config.syncFullHistory && PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP] && isDesktop(config)) {
 		webSubPlatform = PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP]
 	}

@@ -73,6 +73,7 @@ describe('registration client payload', () => {
 		const windowsPayload = loginPayload(Browsers.windows('Desktop'), true)
 		const macPayload = loginPayload(Browsers.macOS('Desktop'), true)
 
+		expect(windowsPayload.userAgent?.platform).toBe(proto.ClientPayload.UserAgent.Platform.WEB)
 		expect(windowsPayload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID)
 		expect(macPayload.userAgent?.platform).toBe(proto.ClientPayload.UserAgent.Platform.MACOS)
 		expect(macPayload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.DARWIN)
