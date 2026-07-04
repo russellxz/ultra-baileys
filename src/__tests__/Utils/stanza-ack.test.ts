@@ -49,6 +49,28 @@ describe('buildAckStanza', () => {
 			expect(ack.attrs.class).toBe('notification')
 		})
 
+		it('should preserve passkey notification type in ACK', () => {
+			const node: BinaryNode = {
+				tag: 'notification',
+				attrs: {
+					id: 'notif-passkey',
+					from: 's.whatsapp.net',
+					type: 'passkey_prologue_request'
+				}
+			}
+
+			const ack = buildAckStanza(node)
+			expect(ack).toEqual({
+				tag: 'ack',
+				attrs: {
+					id: 'notif-passkey',
+					to: 's.whatsapp.net',
+					class: 'notification',
+					type: 'passkey_prologue_request'
+				}
+			})
+		})
+
 		it('should build ACK for call node', () => {
 			const node: BinaryNode = {
 				tag: 'call',

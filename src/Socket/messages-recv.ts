@@ -41,6 +41,7 @@ import {
 	getCallStatusFromNode,
 	getHistoryMsg,
 	getNextPreKeys,
+	getPasskeyRequestState,
 	getStatusFromReceiptType,
 	handleIdentityChange,
 	hkdf,
@@ -1195,6 +1196,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				})
 				authState.creds.registered = true
 				ev.emit('creds.update', authState.creds)
+				break
+			case 'passkey_prologue_request':
+			case 'crsc_continuation':
+				const passkeyRequest = getPasskeyRequestState(node)
+				if (passkeyRequest) {
+					logger.info(passkeyRequest, 'received passkey companion-linking request')
+					ev.emit('connection.update', { passkeyRequest })
+				}
+
 				break
 			case 'privacy_token':
 				await handlePrivacyTokenNotification(node)
