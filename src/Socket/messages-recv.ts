@@ -142,11 +142,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 
-	/**
-	 * Companion side of the WhatsApp "Shortcake" passkey-linking handshake. Only
-	 * created when a `signPasskeyAssertion` is configured; otherwise a server
-	 * forced passkey prologue is just acked (and surfaced via `connection.update`).
-	 */
+	/** Shortcake passkey-linking flow, only when a `signPasskeyAssertion` is configured. */
 	const shortcakeFlow = config.signPasskeyAssertion
 		? makeShortcakeFlow({
 				logger,
@@ -161,26 +157,28 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	registerSocketEndHandler(() => shortcakeFlow?.clearSession())
 
-	/**
-	 * Handles the server-forced passkey ("Shortcake") prologue. With a configured
-	 * `signPasskeyAssertion` the full handshake runs; without one we surface the
-	 * requirement via `connection.update` and let the notification ack, instead of
-	 * silently stalling, which is what happens today when the server demands a
-	 * passkey after a successful pairing-code `companion_finish`.
-	 */
-	const handleShortcakeNotification = async (node: BinaryNode) => {
+	/** Serializes prologue -> continuation off the notification mutex, so the ack isn't blocked by the handshake. */
+	const shortcakeMutex = makeMutex()
+
+	/** Runs the forced-passkey handshake (detached); with no signer, surfaces `passkeyRequired` and warns. */
+	const handleShortcakeNotification = (node: BinaryNode) => {
 		if (node.attrs.type === 'passkey_prologue_request') {
 			ev.emit('connection.update', { passkeyRequired: { hasSigner: !!shortcakeFlow } })
 		}
 
-		if (shortcakeFlow) {
-			await shortcakeFlow.handleIncomingNotification(node)
+		if (!shortcakeFlow) {
+			if (node.attrs.type === 'passkey_prologue_request') {
+				logger.warn({ id: node.attrs.id }, 'server requested passkey prologue but no signPasskeyAssertion configured')
+			}
+
 			return
 		}
 
-		if (node.attrs.type === 'passkey_prologue_request') {
-			logger.warn({ id: node.attrs.id }, 'server requested passkey prologue but no signPasskeyAssertion configured')
-		}
+		// run detached + serialized: the notification is acked immediately, and the
+		// handshake (external signer + follow-up IQs) never blocks other notifications
+		shortcakeMutex
+			.mutex(() => shortcakeFlow.handleIncomingNotification(node))
+			.catch(err => logger.error({ err, id: node.attrs.id }, 'shortcake handshake failed'))
 	}
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
@@ -1241,7 +1239,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'passkey_prologue_request':
 			case 'crsc_continuation':
-				await handleShortcakeNotification(node)
+				handleShortcakeNotification(node)
 				break
 			case 'privacy_token':
 				await handlePrivacyTokenNotification(node)

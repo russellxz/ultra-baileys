@@ -140,12 +140,12 @@ describe('Shortcake flow', () => {
 			val = (val << 8) | b
 			bits += 8
 			while (bits >= 5) {
-				primaryCode += ALPHABET[(val >>> (bits - 5)) & 31]
+				primaryCode += ALPHABET.charAt((val >>> (bits - 5)) & 31)
 				bits -= 5
 			}
 		}
 
-		if (bits > 0) primaryCode += ALPHABET[(val << (5 - bits)) & 31]
+		if (bits > 0) primaryCode += ALPHABET.charAt((val << (5 - bits)) & 31)
 
 		expect(emittedCode).toBe(primaryCode)
 
@@ -166,7 +166,7 @@ describe('Shortcake flow', () => {
 		expect(new Uint8Array(pairingRequest.advSecret!)).toEqual(new Uint8Array(Buffer.from(creds.advSecretKey, 'base64')))
 	})
 
-	it('surfaces a passkey requirement without a signer by returning false from the flow router', async () => {
+	it('returns false for unrecognized notification types', async () => {
 		const flow = makeShortcakeFlow({
 			logger: createMockLogger(),
 			query: async () => iqResult(),

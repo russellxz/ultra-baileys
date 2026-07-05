@@ -56,12 +56,12 @@ describe('Shortcake crypto', () => {
 			value = (value << 8) | expected[i]!
 			bitCount += 8
 			while (bitCount >= 5) {
-				manual += ALPHABET[(value >>> (bitCount - 5)) & 31]
+				manual += ALPHABET.charAt((value >>> (bitCount - 5)) & 31)
 				bitCount -= 5
 			}
 		}
 
-		if (bitCount > 0) manual += ALPHABET[(value << (5 - bitCount)) & 31]
+		if (bitCount > 0) manual += ALPHABET.charAt((value << (5 - bitCount)) & 31)
 
 		expect(code).toBe(manual)
 	})

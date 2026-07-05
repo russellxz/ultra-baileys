@@ -1,3 +1,4 @@
+import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds } from '../Types'
@@ -19,12 +20,7 @@ import {
 	type ShortcakeCompanionEphemeralIdentity
 } from './shortcake-crypto'
 
-/**
- * Externally-provided WebAuthn assertion. The passkey/credential source lives
- * OUTSIDE the protocol layer: the caller signs the server's request options
- * however it likes (real authenticator, virtual authenticator, relay…) and
- * hands back the raw assertion + credential id.
- */
+/** Signs the server's WebAuthn request options; the credential source stays outside the library. */
 export type ShortcakeAssertionSigner = (
 	requestOptions: Uint8Array
 ) => Promise<{ readonly credentialId: Uint8Array; readonly webauthnAssertion: Uint8Array }>
@@ -58,19 +54,15 @@ interface ShortcakeSession {
 
 export interface ShortcakeFlowOptions {
 	readonly logger: ILogger
-	/** Send an IQ and await its result (error-free assertion done by the caller's query). */
+	/** Send an IQ and await its (error-free) result. */
 	readonly query: (node: BinaryNode, timeoutMs?: number) => Promise<BinaryNode>
-	/** WebAuthn signer (passkey assertion), external, keeps credentials out of the protocol. */
 	readonly signAssertion: ShortcakeAssertionSigner
-	/** Read the current credentials (noise/identity keys + ADV secret). */
 	readonly getCreds: () => AuthenticationCreds
-	/** Persist a credentials patch (used to rotate the ADV secret on a prologue). */
+	/** Persist a credentials patch (rotates the ADV secret on a prologue). */
 	readonly updateCreds: (patch: Partial<AuthenticationCreds>) => void
 	/** Companion platform reported in the ephemeral identity. */
 	readonly deviceType?: proto.DeviceProps.PlatformType
-	/** Verification code derived after the primary replies. */
 	readonly emitVerificationCode?: (code: string) => void
-	/** Prologue accepted by the server; now waiting for the primary. */
 	readonly emitPrologueSent?: () => void
 }
 
@@ -80,12 +72,7 @@ const mdIq = (type: 'get' | 'set', content: BinaryNode['content']): BinaryNode =
 	content
 })
 
-/**
- * Drives the companion side of the WhatsApp "Shortcake" passkey-linking
- * handshake (the `xmlns="md"` IQ exchange + commit/reveal ECDH). It owns the
- * wire protocol and crypto only; the WebAuthn assertion and the registration
- * payload are injected by the caller.
- */
+/** Drives the companion side of the "Shortcake" passkey-linking handshake (md IQ exchange + commit/reveal ECDH). */
 export const makeShortcakeFlow = (opts: ShortcakeFlowOptions) => {
 	let session: ShortcakeSession | null = null
 	let handoffKey: PasskeyHandoffKey | null = null
@@ -94,7 +81,7 @@ export const makeShortcakeFlow = (opts: ShortcakeFlowOptions) => {
 		const response = await opts.query(mdIq('get', [{ tag: 'passkey_request_options', attrs: {} }]))
 		const options = getBinaryNodeChildBuffer(response, 'passkey_request_options')
 		if (!options) {
-			throw new Error('shortcake: get-passkey-request-options response missing options')
+			throw new Boom('shortcake: get-passkey-request-options response missing options', { statusCode: 400 })
 		}
 
 		return options
@@ -104,17 +91,13 @@ export const makeShortcakeFlow = (opts: ShortcakeFlowOptions) => {
 		const response = await opts.query(mdIq('get', [{ tag: 'ref', attrs: {} }]))
 		const ref = getBinaryNodeChildString(response, 'ref')
 		if (!ref) {
-			throw new Error('shortcake: get-ref response missing ref')
+			throw new Boom('shortcake: get-ref response missing ref', { statusCode: 400 })
 		}
 
 		return ref
 	}
 
-	/**
-	 * Runs the prologue: fetch the request options, obtain the WebAuthn
-	 * assertion (external), fetch the ref, build the companion ephemeral
-	 * identity + commitment, and send the `passkey_prologue` IQ.
-	 */
+	/** Fetch options, sign (external), fetch ref, build the commitment, send the `passkey_prologue` IQ. */
 	const executePrologue = async (
 		args: {
 			readonly requestOptions?: Uint8Array
@@ -161,12 +144,7 @@ export const makeShortcakeFlow = (opts: ShortcakeFlowOptions) => {
 		opts.emitPrologueSent?.()
 	}
 
-	/**
-	 * Derives a pairing handoff HMAC key from the current ADV secret and rotates
-	 * the ADV secret (matching the official clients). The derived key signs the
-	 * next prologue's handoff proof; the rotated secret goes into the eventual
-	 * `PairingRequest`.
-	 */
+	/** Derive a handoff HMAC key from the ADV secret and rotate it (matching the official clients). */
 	const stashHandoffKeyAndRotateAdv = (): void => {
 		const creds = opts.getCreds()
 		if (!creds?.advSecretKey) {
@@ -188,10 +166,7 @@ export const makeShortcakeFlow = (opts: ShortcakeFlowOptions) => {
 		return true
 	}
 
-	/**
-	 * Confirms the verification code: builds + AES-GCM seals the pairing request
-	 * and sends the `encrypted_pairing_request` IQ.
-	 */
+	/** Build + AES-GCM seal the pairing request and send the `encrypted_pairing_request` IQ. */
 	const confirmVerificationCode = async (): Promise<void> => {
 		if (!session || session.stage !== Stage.WaitingForConfirmation || !session.encryptionKey) {
 			throw new Error('shortcake: no verification code awaiting confirmation')
@@ -247,14 +222,7 @@ export const makeShortcakeFlow = (opts: ShortcakeFlowOptions) => {
 		return true
 	}
 
-	/**
-	 * Routes the two server-pushed Shortcake notifications. Returns `true` when
-	 * the notification was a Shortcake one (and was consumed):
-	 * - `passkey_prologue_request` kicks the flow off (server forces passkey,
-	 *   often right after a pairing-code `companion_finish`); the WebAuthn
-	 *   options are usually embedded.
-	 * - `crsc_continuation` carries the primary's ephemeral identity.
-	 */
+	/** Routes `passkey_prologue_request` / `crsc_continuation`; returns `true` when consumed. */
 	const handleIncomingNotification = async (node: BinaryNode): Promise<boolean> => {
 		if (node.attrs.type === 'passkey_prologue_request') {
 			return handlePasskeyPrologueRequest(node)

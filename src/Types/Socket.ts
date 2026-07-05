@@ -153,11 +153,8 @@ export type SocketConfig = {
 	) => SignalRepositoryWithLIDStore
 
 	/**
-	 * External WebAuthn signer. Configuring it enables handling a server-forced
-	 * passkey ("Shortcake") prologue, e.g. when the server demands a passkey
-	 * right after a successful pairing-code `companion_finish`. Called with the
-	 * server's request options; returns the assertion + credential id. The
-	 * credential source (real/virtual authenticator) stays outside the library.
+	 * External WebAuthn signer; enables handling a server-forced passkey ("Shortcake") prologue
+	 * (e.g. right after a pairing-code `companion_finish`). The credential source stays outside the library.
 	 */
 	signPasskeyAssertion?: ShortcakeAssertionSigner
 }

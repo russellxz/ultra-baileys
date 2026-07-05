@@ -13,39 +13,24 @@ const EPHEMERAL_PUBLIC_KEY_BYTES = 32
 /** HKDF `info` for the pairing-request encryption key. */
 const ENCRYPTION_KEY_INFO = 'Pairing Information Encryption Key'
 
-/**
- * Decoded `PrimaryEphemeralIdentity` the primary device returns: its ephemeral
- * X25519 public key (32B) and a 32B nonce used to derive the verification code.
- */
+/** The primary device's ephemeral X25519 public key + 32B nonce (used for the verification code). */
 export interface ShortcakePrimaryEphemeralIdentity {
 	readonly publicKey: Uint8Array
 	readonly nonce: Uint8Array
 }
 
-/**
- * Carries the companion's ephemeral X25519 private key (`keyPair.private`) and
- * the pre-image `companionNonce`. Hold these in memory for the handshake only;
- * never log or `JSON.stringify` an instance.
- */
+/** The companion's ephemeral X25519 keypair + committed nonce; keep in memory for the handshake only. */
 export interface ShortcakeCompanionEphemeralIdentity {
-	/** Companion ephemeral X25519 keypair (private half kept for the ECDH). */
 	readonly keyPair: KeyPair
 	/** 32 random bytes committed up-front, revealed only after the primary replies. */
 	readonly companionNonce: Uint8Array
-	/** Encoded `CompanionEphemeralIdentity` proto (committed + sent in the prologue). */
 	readonly companionEphemeralIdentityBytes: Uint8Array
-	/** `SHA-256(companionEphemeralIdentity ‖ companionNonce)`, the commitment hash. */
+	/** `SHA-256(companionEphemeralIdentity ‖ companionNonce)`. */
 	readonly commitmentHash: Uint8Array
-	/** Encoded `ProloguePayload` proto ready for the `SetPasskeyPrologue` IQ. */
 	readonly prologuePayloadBytes: Uint8Array
 }
 
-/**
- * Generates the companion's ephemeral identity + commitment for a Shortcake
- * prologue. The companion publishes a commitment to its nonce now and reveals
- * the nonce later (after the primary's identity arrives) so the primary cannot
- * grind the verification code.
- */
+/** Generate the companion's ephemeral identity + nonce commitment for the prologue. */
 export function generateCompanionEphemeralIdentity(args: {
 	readonly ref: string
 	readonly deviceType: proto.DeviceProps.PlatformType
@@ -91,10 +76,7 @@ export function decodePrimaryEphemeralIdentity(bytes: Uint8Array): ShortcakePrim
 	return { publicKey, nonce }
 }
 
-/**
- * Derives the short verification code shown on both devices:
- * `Crockford32( primaryNonce[0..5] XOR SHA-256(companionNonce ‖ primaryPubKey)[0..5] )`.
- */
+/** Verification code: `Crockford32( primaryNonce[0..5] XOR SHA-256(companionNonce ‖ primaryPubKey)[0..5] )`. */
 export function deriveVerificationCode(companionNonce: Uint8Array, primary: ShortcakePrimaryEphemeralIdentity): string {
 	const digest = sha256(Buffer.concat([companionNonce, primary.publicKey]))
 	const code = Buffer.alloc(VERIFICATION_CODE_BYTES)
@@ -105,10 +87,7 @@ export function deriveVerificationCode(companionNonce: Uint8Array, primary: Shor
 	return bytesToCrockford(code)
 }
 
-/**
- * Derives the AES-GCM key that protects the pairing request:
- * `HKDF( X25519(companionPriv, primaryPub), salt="Companion Pairing <deviceType> with ref <ref>", info="Pairing Information Encryption Key" )`.
- */
+/** AES-GCM key for the pairing request: `HKDF( X25519(companionPriv, primaryPub), salt, ENCRYPTION_KEY_INFO )`. */
 export function deriveEncryptionKey(args: {
 	readonly companionPrivKey: Uint8Array
 	readonly primaryPublicKey: Uint8Array
@@ -120,10 +99,7 @@ export function deriveEncryptionKey(args: {
 	return hkdf(shared, ENCRYPTION_KEY_BYTES, { salt, info: ENCRYPTION_KEY_INFO })
 }
 
-/**
- * Encrypts the pairing request plaintext under the derived key and returns the
- * encoded `EncryptedPairingRequest` proto (random 12-byte IV).
- */
+/** Seal the pairing request under the derived key, returning the encoded `EncryptedPairingRequest`. */
 export function encryptPairingRequest(encryptionKey: Uint8Array, plaintext: Uint8Array): Uint8Array {
 	if (encryptionKey.length !== ENCRYPTION_KEY_BYTES) {
 		throw new Error('shortcake: encryption key must be 32 bytes')
