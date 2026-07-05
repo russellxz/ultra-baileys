@@ -46,6 +46,28 @@ describe('getPasskeyRequestState', () => {
 		})
 	})
 
+	it('treats empty passkey request options as present', () => {
+		const node: BinaryNode = {
+			tag: 'notification',
+			attrs: {
+				id: 'notif-id',
+				from: 's.whatsapp.net',
+				type: 'passkey_prologue_request'
+			},
+			content: [
+				{
+					tag: 'passkey_request_options',
+					attrs: {}
+				}
+			]
+		}
+
+		expect(getPasskeyRequestState(node)).toEqual({
+			notificationType: 'passkey_prologue_request',
+			hasRequestOptions: true
+		})
+	})
+
 	it('ignores unrelated notifications', () => {
 		const node: BinaryNode = {
 			tag: 'notification',

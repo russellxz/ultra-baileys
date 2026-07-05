@@ -1,5 +1,5 @@
 import type { PasskeyRequestState } from '../Types'
-import { type BinaryNode, getBinaryNodeChildString } from '../WABinary'
+import { type BinaryNode, getBinaryNodeChild } from '../WABinary'
 
 export const getPasskeyRequestState = (node: BinaryNode): PasskeyRequestState | undefined => {
 	const { type } = node.attrs
@@ -9,6 +9,6 @@ export const getPasskeyRequestState = (node: BinaryNode): PasskeyRequestState | 
 
 	return {
 		notificationType: type,
-		hasRequestOptions: !!getBinaryNodeChildString(node, 'passkey_request_options')
+		hasRequestOptions: !!getBinaryNodeChild(node, 'passkey_request_options')
 	}
 }
