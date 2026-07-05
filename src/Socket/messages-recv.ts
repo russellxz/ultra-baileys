@@ -109,12 +109,11 @@ const ENFORCEMENT_TYPE_VALUES = new Set<string>(Object.values(ReachoutTimelockEn
 export const emitPasskeyRequestUpdate = (node: BinaryNode, ev: BaileysEventEmitter, logger: ILogger) => {
 	const passkeyRequest = getPasskeyRequestState(node)
 	if (!passkeyRequest) {
-		return false
+		return
 	}
 
 	logger.info(passkeyRequest, 'received passkey companion-linking request')
 	ev.emit('connection.update', { passkeyRequest })
-	return true
 }
 
 function isValidEnforcementType(value: string | undefined): value is ReachoutTimelockEnforcementType {

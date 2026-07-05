@@ -30,7 +30,7 @@ describe('emitPasskeyRequestUpdate', () => {
 		const ev = makeEventEmitter()
 		const logger = makeLogger()
 
-		const emitted = emitPasskeyRequestUpdate(
+		emitPasskeyRequestUpdate(
 			{
 				tag: 'notification',
 				attrs: {
@@ -44,7 +44,6 @@ describe('emitPasskeyRequestUpdate', () => {
 			logger
 		)
 
-		expect(emitted).toBe(true)
 		expect(ev.emit).toHaveBeenCalledWith('connection.update', { passkeyRequest: expected })
 		expect(logger.info).toHaveBeenCalledWith(expected, 'received passkey companion-linking request')
 	})
@@ -61,7 +60,8 @@ describe('emitPasskeyRequestUpdate', () => {
 			}
 		}
 
-		expect(emitPasskeyRequestUpdate(node, ev, logger)).toBe(false)
+		emitPasskeyRequestUpdate(node, ev, logger)
+
 		expect(ev.emit).not.toHaveBeenCalled()
 		expect(logger.info).not.toHaveBeenCalled()
 	})
