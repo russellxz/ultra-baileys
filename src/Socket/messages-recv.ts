@@ -11,6 +11,7 @@ import {
 	STATUS_EXPIRY_SECONDS
 } from '../Defaults'
 import type {
+	BaileysEventEmitter,
 	GroupParticipant,
 	MessageReceiptType,
 	MessageRelayOptions,
@@ -41,6 +42,7 @@ import {
 	getCallStatusFromNode,
 	getHistoryMsg,
 	getNextPreKeys,
+	getPasskeyRequestState,
 	getStatusFromReceiptType,
 	handleIdentityChange,
 	hkdf,
@@ -53,6 +55,7 @@ import {
 	xmppPreKey,
 	xmppSignedPreKey
 } from '../Utils'
+import type { ILogger } from '../Utils/logger'
 import { makeMutex } from '../Utils/make-mutex'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import { buildAckStanza } from '../Utils/stanza-ack'
@@ -102,6 +105,16 @@ type ReachoutTimelockNotificationPayload = {
 }
 
 const ENFORCEMENT_TYPE_VALUES = new Set<string>(Object.values(ReachoutTimelockEnforcementType))
+
+export const emitPasskeyRequestUpdate = (node: BinaryNode, ev: BaileysEventEmitter, logger: ILogger) => {
+	const passkeyRequest = getPasskeyRequestState(node)
+	if (!passkeyRequest) {
+		return
+	}
+
+	logger.info(passkeyRequest, 'received passkey companion-linking request')
+	ev.emit('connection.update', { passkeyRequest })
+}
 
 function isValidEnforcementType(value: string | undefined): value is ReachoutTimelockEnforcementType {
 	return typeof value === 'string' && ENFORCEMENT_TYPE_VALUES.has(value)
@@ -1196,6 +1209,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				authState.creds.registered = true
 				ev.emit('creds.update', authState.creds)
 				break
+			case 'passkey_prologue_request':
+			case 'crsc_continuation': {
+				emitPasskeyRequestUpdate(node, ev, logger)
+
+				break
+			}
+
 			case 'privacy_token':
 				await handlePrivacyTokenNotification(node)
 				break
