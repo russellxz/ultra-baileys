@@ -28,6 +28,11 @@ export type ConnectionState = {
 	isNewLogin?: boolean
 	/** the current QR code */
 	qr?: string
+	/**
+	 * the server is forcing a passkey ("Shortcake") to link this device. `hasSigner` is `true` when a
+	 * `signPasskeyAssertion` is configured (handshake proceeds), `false` when the link can't complete headless.
+	 */
+	passkeyRequired?: { hasSigner: boolean }
 	/** has the device received all pending notifications while it was offline */
 	receivedPendingNotifications?: boolean
 	/** legacy connection options */

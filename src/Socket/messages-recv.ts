@@ -41,9 +41,11 @@ import {
 	getCallStatusFromNode,
 	getHistoryMsg,
 	getNextPreKeys,
+	getPlatformType,
 	getStatusFromReceiptType,
 	handleIdentityChange,
 	hkdf,
+	makeShortcakeFlow,
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
@@ -139,6 +141,45 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
+	/** Shortcake passkey-linking flow, only when a `signPasskeyAssertion` is configured. */
+	const shortcakeFlow = config.signPasskeyAssertion
+		? makeShortcakeFlow({
+				logger,
+				query,
+				signAssertion: config.signPasskeyAssertion,
+				getCreds: () => authState.creds,
+				updateCreds: patch => ev.emit('creds.update', patch),
+				deviceType: getPlatformType(config.browser[1]),
+				emitVerificationCode: code => logger.debug({ code }, 'shortcake verification code')
+			})
+		: null
+
+	registerSocketEndHandler(() => shortcakeFlow?.clearSession())
+
+	/** Serializes prologue -> continuation off the notification mutex, so the ack isn't blocked by the handshake. */
+	const shortcakeMutex = makeMutex()
+
+	/** Runs the forced-passkey handshake (detached); with no signer, surfaces `passkeyRequired` and warns. */
+	const handleShortcakeNotification = (node: BinaryNode) => {
+		if (node.attrs.type === 'passkey_prologue_request') {
+			ev.emit('connection.update', { passkeyRequired: { hasSigner: !!shortcakeFlow } })
+		}
+
+		if (!shortcakeFlow) {
+			if (node.attrs.type === 'passkey_prologue_request') {
+				logger.warn({ id: node.attrs.id }, 'server requested passkey prologue but no signPasskeyAssertion configured')
+			}
+
+			return
+		}
+
+		// run detached + serialized: the notification is acked immediately, and the
+		// handshake (external signer + follow-up IQs) never blocks other notifications
+		shortcakeMutex
+			.mutex(() => shortcakeFlow.handleIncomingNotification(node))
+			.catch(err => logger.error({ err, id: node.attrs.id }, 'shortcake handshake failed'))
+	}
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -1195,6 +1236,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				})
 				authState.creds.registered = true
 				ev.emit('creds.update', authState.creds)
+				break
+			case 'passkey_prologue_request':
+			case 'crsc_continuation':
+				handleShortcakeNotification(node)
 				break
 			case 'privacy_token':
 				await handlePrivacyTokenNotification(node)
