@@ -1,9 +1,14 @@
+import type Long from 'long'
+import type { proto } from '../../WAProto/index.js'
 import type { WAMediaUploadFunction, WAUrlInfo } from '../Types'
+import { toNumber } from './generics'
 import type { ILogger } from './logger'
 import { prepareWAMessageMedia } from './messages'
 import { extractImageThumb, getHttpStream } from './messages-media'
 
 const THUMBNAIL_WIDTH_PX = 192
+export type LinkPreviewResponse =
+	proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ILinkPreviewResponse
 
 /** Fetches an image and generates a thumbnail for it */
 const getCompressedJpegThumbnail = async (url: string, { thumbnailWidth, fetchOpts }: URLGenerationOptions) => {
@@ -22,6 +27,61 @@ export type URLGenerationOptions = {
 	}
 	uploadImage?: WAMediaUploadFunction
 	logger?: ILogger
+}
+
+const bufferFromStringHash = (hash?: string | null) => {
+	if (!hash) {
+		return undefined
+	}
+
+	const buffer = Buffer.from(hash, 'base64url')
+	return buffer.length ? buffer : undefined
+}
+
+const mediaKeyTimestampFromMs = (timestampMs: Long | number | null | undefined) => {
+	const timestamp = toNumber(timestampMs)
+	if (!timestamp) {
+		return undefined
+	}
+
+	// The field is named in milliseconds, but phone responses can already carry seconds.
+	return timestamp > 9_999_999_999 ? Math.floor(timestamp / 1000) : timestamp
+}
+
+export const linkPreviewResponseToUrlInfo = (
+	matchedText: string,
+	response: LinkPreviewResponse | null | undefined
+): WAUrlInfo | undefined => {
+	if (!response?.url || !response.title) {
+		return undefined
+	}
+
+	const urlInfo: WAUrlInfo = {
+		'canonical-url': response.url,
+		'matched-text': response.matchText || matchedText,
+		title: response.title,
+		description: response.description || undefined,
+		jpegThumbnail: response.thumbData ? Buffer.from(response.thumbData) : undefined
+	}
+
+	const hqThumbnail = response.hqThumbnail
+	const fileSha256 = bufferFromStringHash(hqThumbnail?.thumbHash)
+	const fileEncSha256 = bufferFromStringHash(hqThumbnail?.encThumbHash)
+	if (hqThumbnail?.directPath && hqThumbnail.mediaKey && fileSha256 && fileEncSha256) {
+		urlInfo.highQualityThumbnail = {
+			directPath: hqThumbnail.directPath,
+			fileSha256,
+			fileEncSha256,
+			jpegThumbnail: urlInfo.jpegThumbnail,
+			mediaKey: Buffer.from(hqThumbnail.mediaKey),
+			mediaKeyTimestamp: mediaKeyTimestampFromMs(hqThumbnail.mediaKeyTimestampMs),
+			mimetype: 'image/jpeg',
+			width: hqThumbnail.thumbWidth || undefined,
+			height: hqThumbnail.thumbHeight || undefined
+		}
+	}
+
+	return urlInfo
 }
 
 /**

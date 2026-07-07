@@ -48,6 +48,21 @@ type ProcessMessageContext = {
 	getMessage: SocketConfig['getMessage']
 }
 
+const emitLinkPreviewResponses = (
+	response: proto.Message.IPeerDataOperationRequestResponseMessage,
+	ev: BaileysEventEmitter
+) => {
+	for (const result of response.peerDataOperationResult || []) {
+		const linkPreview = result?.linkPreviewResponse
+		if (linkPreview) {
+			ev.emit('link-preview.update', {
+				stanzaId: response.stanzaId,
+				linkPreview
+			})
+		}
+	}
+}
+
 const REAL_MSG_STUB_TYPES = new Set([
 	WAMessageStubType.CALL_MISSED_GROUP_VIDEO,
 	WAMessageStubType.CALL_MISSED_GROUP_VOICE,
@@ -461,6 +476,7 @@ const processMessage = async (
 				const response = protocolMsg.peerDataOperationRequestResponseMessage!
 				if (response) {
 					// TODO: IMPLEMENT HISTORY SYNC ETC (sticker uploads etc.).
+					emitLinkPreviewResponses(response, ev)
 					const peerDataOperationResult = response.peerDataOperationResult || []
 					for (const result of peerDataOperationResult) {
 						const retryResponse = result?.placeholderMessageResendResponse

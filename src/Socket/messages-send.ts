@@ -4,14 +4,17 @@ import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
 	AnyMessageContent,
+	BaileysEventMap,
 	MediaConnInfo,
 	MessageReceiptType,
 	MessageRelayOptions,
 	MiscMessageGenerationOptions,
 	SocketConfig,
 	WAMessage,
-	WAMessageKey
+	WAMessageKey,
+	WAUrlInfo
 } from '../Types'
+import { DisconnectReason } from '../Types'
 import {
 	aggregateMessageKeysNotFromMe,
 	assertMediaContent,
@@ -33,9 +36,10 @@ import {
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
+	promiseTimeout,
 	unixTimestampSeconds
 } from '../Utils'
-import { getUrlInfo } from '../Utils/link-preview'
+import { getUrlInfo, linkPreviewResponseToUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -69,6 +73,8 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
+
+const LINK_PREVIEW_PHONE_TIMEOUT_MS = 10_000
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -499,7 +505,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const sendPeerDataOperationMessage = async (
-		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
+		pdoMessage: proto.Message.IPeerDataOperationRequestMessage,
+		messageId?: string
 	): Promise<string> => {
 		//TODO: for later, abstract the logic to send a Peer Message instead of just PDO - useful for App State Key Resync with phone
 		if (!authState.creds.me?.id) {
@@ -516,6 +523,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meJid = jidNormalizedUser(authState.creds.me.id)
 
 		const msgId = await relayMessage(meJid, protocolMessage, {
+			messageId,
 			additionalAttributes: {
 				category: 'peer',
 
@@ -1247,6 +1255,107 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
 
+	const armLinkPreviewWait = (stanzaId: string, text: string) => {
+		let listener: ((update: BaileysEventMap['link-preview.update']) => void) | undefined
+		let closeListener: ((update: BaileysEventMap['connection.update']) => void) | undefined
+		const cleanup = () => {
+			if (listener) {
+				ev.off('link-preview.update', listener)
+				listener = undefined
+			}
+
+			if (closeListener) {
+				ev.off('connection.update', closeListener)
+				closeListener = undefined
+			}
+		}
+
+		const response = new Promise<WAUrlInfo | undefined>((resolve, reject) => {
+			closeListener = ({ connection, lastDisconnect }) => {
+				if (connection === 'close') {
+					cleanup()
+					reject(
+						lastDisconnect?.error || new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+					)
+				}
+			}
+
+			listener = update => {
+				if (update.stanzaId === stanzaId) {
+					cleanup()
+					resolve(linkPreviewResponseToUrlInfo(text, update.linkPreview))
+				}
+			}
+
+			ev.on('connection.update', closeListener)
+			ev.on('link-preview.update', listener)
+		})
+
+		const settledResponse = response.then(
+			value => ({ status: 'fulfilled' as const, value }),
+			reason => ({ status: 'rejected' as const, reason })
+		)
+
+		return {
+			cleanup,
+			wait: async (timeoutMs: number) => {
+				const result = await promiseTimeout<PromiseSettledResult<WAUrlInfo | undefined>>(timeoutMs, resolve => {
+					void settledResponse.then(resolve)
+				})
+
+				if (result.status === 'rejected') {
+					throw result.reason
+				}
+
+				return result.value
+			}
+		}
+	}
+
+	const requestPhoneLinkPreview = async (text: string): Promise<WAUrlInfo | undefined> => {
+		const pdoMessage: proto.Message.IPeerDataOperationRequestMessage = {
+			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.GENERATE_LINK_PREVIEW,
+			requestUrlPreview: [
+				{
+					url: text,
+					includeHqThumbnail: generateHighQualityLinkPreview
+				}
+			]
+		}
+
+		const stanzaId = generateMessageIDV2(authState.creds.me?.id)
+		const response = armLinkPreviewWait(stanzaId, text)
+		try {
+			await sendPeerDataOperationMessage(pdoMessage, stanzaId)
+			return await response.wait(LINK_PREVIEW_PHONE_TIMEOUT_MS)
+		} finally {
+			response.cleanup()
+		}
+	}
+
+	const getUrlInfoForMessage = async (text: string) => {
+		if (generateHighQualityLinkPreview) {
+			try {
+				const urlInfo = await requestPhoneLinkPreview(text)
+				if (urlInfo) {
+					return urlInfo
+				}
+			} catch (err) {
+				logger.debug({ err, url: text }, 'failed to generate link preview via phone')
+			}
+		}
+
+		return getUrlInfo(text, {
+			thumbnailWidth: linkPreviewImageThumbnailWidth,
+			fetchOpts: {
+				timeout: 3_000,
+				...(httpRequestOptions || {})
+			},
+			logger,
+			uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
+		})
+	}
+
 	registerSocketEndHandler(() => {
 		if (!config.userDevicesCache && userDevicesCache.close) {
 			userDevicesCache.close()
@@ -1345,16 +1454,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const fullMsg = await generateWAMessage(jid, content, {
 					logger,
 					userJid,
-					getUrlInfo: text =>
-						getUrlInfo(text, {
-							thumbnailWidth: linkPreviewImageThumbnailWidth,
-							fetchOpts: {
-								timeout: 3_000,
-								...(httpRequestOptions || {})
-							},
-							logger,
-							uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
-						}),
+					getUrlInfo: getUrlInfoForMessage,
 					//TODO: CACHE
 					getProfilePicUrl: sock.profilePictureUrl,
 					getCallLink: sock.createCallLink,
