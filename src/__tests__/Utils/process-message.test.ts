@@ -1,5 +1,9 @@
-import type { WAMessage } from '../../Types'
-import { cleanMessage, getChatId } from '../../Utils/process-message'
+import { EventEmitter } from 'events'
+import { proto } from '../../../WAProto'
+import type { BaileysEventEmitter, BaileysEventMap, WAMessage } from '../../Types'
+import processMessage, { cleanMessage, getChatId } from '../../Utils/process-message'
+
+const ME_ID = 'me@s.whatsapp.net'
 
 const createBaseMessage = (key: Partial<WAMessage['key']>, message?: Partial<WAMessage['message']>): WAMessage => {
 	return {
@@ -133,6 +137,62 @@ describe('cleanMessage', () => {
 		it('should not crash on an empty message object', () => {
 			const message = createBaseMessage({}, {})
 			expect(() => cleanMessage(message, meId, meLid)).not.toThrow()
+		})
+	})
+})
+
+describe('processMessage', () => {
+	it('emits link-preview.update for phone-generated link preview responses', async () => {
+		const ev = new EventEmitter() as unknown as BaileysEventEmitter
+		let emitted: BaileysEventMap['link-preview.update'] | undefined
+		ev.on('link-preview.update', update => {
+			emitted = update
+		})
+
+		const linkPreview = {
+			url: 'https://example.com/',
+			title: 'Example',
+			thumbData: Buffer.from([1, 2, 3]),
+			hqThumbnail: {
+				directPath: '/o1/v/t62.7118-24/link-preview',
+				thumbHash: Buffer.from('thumb-hash').toString('base64'),
+				encThumbHash: Buffer.from('enc-thumb-hash').toString('base64'),
+				mediaKey: Buffer.from('media-key'),
+				mediaKeyTimestampMs: 1_692_895_570_000,
+				thumbWidth: 1200,
+				thumbHeight: 630
+			}
+		}
+
+		const message = createBaseMessage(
+			{ remoteJid: ME_ID, fromMe: true },
+			{
+				protocolMessage: {
+					type: proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE,
+					peerDataOperationRequestResponseMessage: {
+						stanzaId: 'PDO_REQUEST_ID',
+						peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.GENERATE_LINK_PREVIEW,
+						peerDataOperationResult: [{ linkPreviewResponse: linkPreview }]
+					}
+				}
+			}
+		)
+
+		type ProcessMessageContext = Parameters<typeof processMessage>[1]
+		await processMessage(message, {
+			shouldProcessHistoryMsg: false,
+			ev,
+			creds: { me: { id: ME_ID } } as ProcessMessageContext['creds'],
+			keyStore: {} as ProcessMessageContext['keyStore'],
+			logger: undefined,
+			options: {},
+			signalRepository: {} as ProcessMessageContext['signalRepository'],
+			getMessage: async () => undefined
+		})
+
+		expect(emitted).toEqual({
+			stanzaId: 'PDO_REQUEST_ID',
+			linkPreview
 		})
 	})
 })

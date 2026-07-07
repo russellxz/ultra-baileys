@@ -10,7 +10,8 @@ import type {
 	MiscMessageGenerationOptions,
 	SocketConfig,
 	WAMessage,
-	WAMessageKey
+	WAMessageKey,
+	WAUrlInfo
 } from '../Types'
 import {
 	aggregateMessageKeysNotFromMe,
@@ -35,7 +36,7 @@ import {
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds
 } from '../Utils'
-import { getUrlInfo } from '../Utils/link-preview'
+import { getUrlInfo, linkPreviewResponseToUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -69,6 +70,8 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
+
+const LINK_PREVIEW_PHONE_TIMEOUT_MS = 10_000
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -1246,6 +1249,55 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
+	const waitForLinkPreviewUpdate = bindWaitForEvent(ev, 'link-preview.update')
+
+	const requestPhoneLinkPreview = async (text: string): Promise<WAUrlInfo | undefined> => {
+		const pdoMessage: proto.Message.IPeerDataOperationRequestMessage = {
+			peerDataOperationRequestType: proto.Message.PeerDataOperationRequestType.GENERATE_LINK_PREVIEW,
+			requestUrlPreview: [
+				{
+					url: text,
+					includeHqThumbnail: generateHighQualityLinkPreview
+				}
+			]
+		}
+
+		const stanzaId = await sendPeerDataOperationMessage(pdoMessage)
+		let urlInfo: WAUrlInfo | undefined
+		await waitForLinkPreviewUpdate(async update => {
+			if (update.stanzaId !== stanzaId) {
+				return false
+			}
+
+			urlInfo = linkPreviewResponseToUrlInfo(text, update.linkPreview)
+			return true
+		}, LINK_PREVIEW_PHONE_TIMEOUT_MS)
+
+		return urlInfo
+	}
+
+	const getUrlInfoForMessage = async (text: string) => {
+		if (generateHighQualityLinkPreview) {
+			try {
+				const urlInfo = await requestPhoneLinkPreview(text)
+				if (urlInfo) {
+					return urlInfo
+				}
+			} catch (err) {
+				logger.debug({ err, url: text }, 'failed to generate link preview via phone')
+			}
+		}
+
+		return getUrlInfo(text, {
+			thumbnailWidth: linkPreviewImageThumbnailWidth,
+			fetchOpts: {
+				timeout: 3_000,
+				...(httpRequestOptions || {})
+			},
+			logger,
+			uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
+		})
+	}
 
 	registerSocketEndHandler(() => {
 		if (!config.userDevicesCache && userDevicesCache.close) {
@@ -1345,16 +1397,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const fullMsg = await generateWAMessage(jid, content, {
 					logger,
 					userJid,
-					getUrlInfo: text =>
-						getUrlInfo(text, {
-							thumbnailWidth: linkPreviewImageThumbnailWidth,
-							fetchOpts: {
-								timeout: 3_000,
-								...(httpRequestOptions || {})
-							},
-							logger,
-							uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
-						}),
+					getUrlInfo: getUrlInfoForMessage,
 					//TODO: CACHE
 					getProfilePicUrl: sock.profilePictureUrl,
 					getCallLink: sock.createCallLink,
