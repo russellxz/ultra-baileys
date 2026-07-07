@@ -502,7 +502,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const sendPeerDataOperationMessage = async (
-		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
+		pdoMessage: proto.Message.IPeerDataOperationRequestMessage,
+		messageId?: string
 	): Promise<string> => {
 		//TODO: for later, abstract the logic to send a Peer Message instead of just PDO - useful for App State Key Resync with phone
 		if (!authState.creds.me?.id) {
@@ -519,6 +520,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meJid = jidNormalizedUser(authState.creds.me.id)
 
 		const msgId = await relayMessage(meJid, protocolMessage, {
+			messageId,
 			additionalAttributes: {
 				category: 'peer',
 
@@ -1262,9 +1264,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			]
 		}
 
-		const stanzaId = await sendPeerDataOperationMessage(pdoMessage)
+		const stanzaId = generateMessageIDV2(authState.creds.me?.id)
 		let urlInfo: WAUrlInfo | undefined
-		await waitForLinkPreviewUpdate(async update => {
+		const response = waitForLinkPreviewUpdate(async update => {
 			if (update.stanzaId !== stanzaId) {
 				return false
 			}
@@ -1272,6 +1274,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			urlInfo = linkPreviewResponseToUrlInfo(text, update.linkPreview)
 			return true
 		}, LINK_PREVIEW_PHONE_TIMEOUT_MS)
+		await Promise.all([sendPeerDataOperationMessage(pdoMessage, stanzaId), response])
 
 		return urlInfo
 	}

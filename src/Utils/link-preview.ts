@@ -7,7 +7,7 @@ import { prepareWAMessageMedia } from './messages'
 import { extractImageThumb, getHttpStream } from './messages-media'
 
 const THUMBNAIL_WIDTH_PX = 192
-type LinkPreviewResponse =
+export type LinkPreviewResponse =
 	proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ILinkPreviewResponse
 
 /** Fetches an image and generates a thumbnail for it */
@@ -34,9 +34,7 @@ const bufferFromStringHash = (hash?: string | null) => {
 		return undefined
 	}
 
-	const normalized = hash.replace(/-/g, '+').replace(/_/g, '/')
-	const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=')
-	const buffer = Buffer.from(padded, 'base64')
+	const buffer = Buffer.from(hash, 'base64url')
 	return buffer.length ? buffer : undefined
 }
 
@@ -46,6 +44,7 @@ const mediaKeyTimestampFromMs = (timestampMs: Long | number | null | undefined) 
 		return undefined
 	}
 
+	// The field is named in milliseconds, but phone responses can already carry seconds.
 	return timestamp > 9_999_999_999 ? Math.floor(timestamp / 1000) : timestamp
 }
 
@@ -66,11 +65,13 @@ export const linkPreviewResponseToUrlInfo = (
 	}
 
 	const hqThumbnail = response.hqThumbnail
-	if (hqThumbnail?.directPath && hqThumbnail.mediaKey) {
+	const fileSha256 = bufferFromStringHash(hqThumbnail?.thumbHash)
+	const fileEncSha256 = bufferFromStringHash(hqThumbnail?.encThumbHash)
+	if (hqThumbnail?.directPath && hqThumbnail.mediaKey && fileSha256 && fileEncSha256) {
 		urlInfo.highQualityThumbnail = {
 			directPath: hqThumbnail.directPath,
-			fileSha256: bufferFromStringHash(hqThumbnail.thumbHash),
-			fileEncSha256: bufferFromStringHash(hqThumbnail.encThumbHash),
+			fileSha256,
+			fileEncSha256,
 			jpegThumbnail: urlInfo.jpegThumbnail,
 			mediaKey: Buffer.from(hqThumbnail.mediaKey),
 			mediaKeyTimestamp: mediaKeyTimestampFromMs(hqThumbnail.mediaKeyTimestampMs),

@@ -49,4 +49,22 @@ describe('linkPreviewResponseToUrlInfo', () => {
 		expect(linkPreviewResponseToUrlInfo('https://example.com', { url: 'https://example.com' })).toBeUndefined()
 		expect(linkPreviewResponseToUrlInfo('https://example.com', { title: 'Example' })).toBeUndefined()
 	})
+
+	it('does not emit high-quality thumbnails without integrity hashes', () => {
+		const urlInfo = linkPreviewResponseToUrlInfo('https://example.com/path', {
+			url: 'https://example.com/',
+			title: 'Example',
+			hqThumbnail: {
+				directPath: '/o1/v/t62.7118-24/link-preview',
+				mediaKey: Buffer.from('media-key')
+			}
+		})
+
+		expect(urlInfo).toMatchObject({
+			'canonical-url': 'https://example.com/',
+			'matched-text': 'https://example.com/path',
+			title: 'Example'
+		})
+		expect(urlInfo?.highQualityThumbnail).toBeUndefined()
+	})
 })
