@@ -4,6 +4,7 @@ import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
 	AnyMessageContent,
+	BaileysEventMap,
 	MediaConnInfo,
 	MessageReceiptType,
 	MessageRelayOptions,
@@ -13,6 +14,7 @@ import type {
 	WAMessageKey,
 	WAUrlInfo
 } from '../Types'
+import { DisconnectReason } from '../Types'
 import {
 	aggregateMessageKeysNotFromMe,
 	assertMediaContent,
@@ -34,6 +36,7 @@ import {
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
+	promiseTimeout,
 	unixTimestampSeconds
 } from '../Utils'
 import { getUrlInfo, linkPreviewResponseToUrlInfo } from '../Utils/link-preview'
@@ -1251,7 +1254,63 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
-	const waitForLinkPreviewUpdate = bindWaitForEvent(ev, 'link-preview.update')
+
+	const armLinkPreviewWait = (stanzaId: string, text: string) => {
+		let listener: ((update: BaileysEventMap['link-preview.update']) => void) | undefined
+		let closeListener: ((update: BaileysEventMap['connection.update']) => void) | undefined
+		const cleanup = () => {
+			if (listener) {
+				ev.off('link-preview.update', listener)
+				listener = undefined
+			}
+
+			if (closeListener) {
+				ev.off('connection.update', closeListener)
+				closeListener = undefined
+			}
+		}
+
+		const response = new Promise<WAUrlInfo | undefined>((resolve, reject) => {
+			closeListener = ({ connection, lastDisconnect }) => {
+				if (connection === 'close') {
+					cleanup()
+					reject(
+						lastDisconnect?.error || new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+					)
+				}
+			}
+
+			listener = update => {
+				if (update.stanzaId === stanzaId) {
+					cleanup()
+					resolve(linkPreviewResponseToUrlInfo(text, update.linkPreview))
+				}
+			}
+
+			ev.on('connection.update', closeListener)
+			ev.on('link-preview.update', listener)
+		})
+
+		const settledResponse = response.then(
+			value => ({ status: 'fulfilled' as const, value }),
+			reason => ({ status: 'rejected' as const, reason })
+		)
+
+		return {
+			cleanup,
+			wait: async (timeoutMs: number) => {
+				const result = await promiseTimeout<PromiseSettledResult<WAUrlInfo | undefined>>(timeoutMs, resolve => {
+					void settledResponse.then(resolve)
+				})
+
+				if (result.status === 'rejected') {
+					throw result.reason
+				}
+
+				return result.value
+			}
+		}
+	}
 
 	const requestPhoneLinkPreview = async (text: string): Promise<WAUrlInfo | undefined> => {
 		const pdoMessage: proto.Message.IPeerDataOperationRequestMessage = {
@@ -1265,18 +1324,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		const stanzaId = generateMessageIDV2(authState.creds.me?.id)
-		let urlInfo: WAUrlInfo | undefined
-		const response = waitForLinkPreviewUpdate(async update => {
-			if (update.stanzaId !== stanzaId) {
-				return false
-			}
-
-			urlInfo = linkPreviewResponseToUrlInfo(text, update.linkPreview)
-			return true
-		}, LINK_PREVIEW_PHONE_TIMEOUT_MS)
-		await Promise.all([sendPeerDataOperationMessage(pdoMessage, stanzaId), response])
-
-		return urlInfo
+		const response = armLinkPreviewWait(stanzaId, text)
+		try {
+			await sendPeerDataOperationMessage(pdoMessage, stanzaId)
+			return await response.wait(LINK_PREVIEW_PHONE_TIMEOUT_MS)
+		} finally {
+			response.cleanup()
+		}
 	}
 
 	const getUrlInfoForMessage = async (text: string) => {
