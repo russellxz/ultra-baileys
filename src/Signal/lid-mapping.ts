@@ -30,11 +30,13 @@ export class LIDMappingStore {
 		this.logger = logger
 	}
 
-	async storeLIDPNMappings(pairs: LIDMapping[]): Promise<void> {
-		if (pairs.length === 0) return
+	/** Returns the subset of `pairs` whose PN-LID mapping was actually new or changed. */
+	async storeLIDPNMappings(pairs: LIDMapping[]): Promise<LIDMapping[]> {
+		if (pairs.length === 0) return []
 
-		const validatedPairs: Array<{ pnUser: string; lidUser: string }> = []
-		for (const { lid, pn } of pairs) {
+		const validatedPairs: Array<{ pnUser: string; lidUser: string; pair: LIDMapping }> = []
+		for (const pair of pairs) {
+			const { lid, pn } = pair
 			if (!((isLidUser(lid) && isPnUser(pn)) || (isPnUser(lid) && isLidUser(pn)))) {
 				this.logger.warn(`Invalid LID-PN mapping: ${lid}, ${pn}`)
 				continue
@@ -44,10 +46,10 @@ export class LIDMappingStore {
 			const pnDecoded = jidDecode(pn)
 			if (!lidDecoded || !pnDecoded) continue
 
-			validatedPairs.push({ pnUser: pnDecoded.user, lidUser: lidDecoded.user })
+			validatedPairs.push({ pnUser: pnDecoded.user, lidUser: lidDecoded.user, pair })
 		}
 
-		if (validatedPairs.length === 0) return
+		if (validatedPairs.length === 0) return []
 
 		const cacheMissSet = new Set<string>()
 		const existingMappings = new Map<string, string>()
@@ -77,7 +79,8 @@ export class LIDMappingStore {
 		}
 
 		const pairMap: { [_: string]: string } = {}
-		for (const { pnUser, lidUser } of validatedPairs) {
+		const changedPairs: LIDMapping[] = []
+		for (const { pnUser, lidUser, pair } of validatedPairs) {
 			const existingLidUser = existingMappings.get(pnUser)
 			if (existingLidUser === lidUser) {
 				this.logger.debug({ pnUser, lidUser }, 'LID mapping already exists, skipping')
@@ -85,9 +88,10 @@ export class LIDMappingStore {
 			}
 
 			pairMap[pnUser] = lidUser
+			changedPairs.push(pair)
 		}
 
-		if (Object.keys(pairMap).length === 0) return
+		if (Object.keys(pairMap).length === 0) return []
 
 		this.logger.trace({ pairMap }, `Storing ${Object.keys(pairMap).length} pn mappings`)
 
@@ -106,6 +110,8 @@ export class LIDMappingStore {
 			this.mappingCache.set(`pn:${pnUser}`, lidUser)
 			this.mappingCache.set(`lid:${lidUser}`, pnUser)
 		}
+
+		return changedPairs
 	}
 
 	async getLIDForPN(pn: string, options: OptionsWithForce = {}): Promise<string | null> {

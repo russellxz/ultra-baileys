@@ -72,4 +72,36 @@ describe('LIDMappingStore', () => {
 			expect(result).toEqual([{ pn, lid: newLid }])
 		})
 	})
+
+	describe('storeLIDPNMappings', () => {
+		it('returns the pair when a PN-LID mapping is new', async () => {
+			const pn = '12345678900@s.whatsapp.net'
+			const lid = '11111111111111@lid'
+
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({} as SignalDataTypeMap['lid-mapping'])
+
+			const result = await lidMappingStore.storeLIDPNMappings([{ pn, lid }])
+
+			expect(result).toEqual([{ pn, lid }])
+			expect(mockKeys.set).toHaveBeenCalled()
+		})
+
+		it('omits pairs whose mapping already matches the cached value, so callers do not force-refresh unnecessarily', async () => {
+			const pn = '12345678900@s.whatsapp.net'
+			const lid = '11111111111111@lid'
+
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({} as SignalDataTypeMap['lid-mapping'])
+			await lidMappingStore.storeLIDPNMappings([{ pn, lid }])
+
+			jest.clearAllMocks()
+
+			// Same mapping arrives again (e.g. every USync device lookup echoes existing LIDs)
+			const result = await lidMappingStore.storeLIDPNMappings([{ pn, lid }])
+
+			expect(result).toEqual([])
+			expect(mockKeys.set).not.toHaveBeenCalled()
+		})
+	})
 })

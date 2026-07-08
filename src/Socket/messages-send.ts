@@ -345,16 +345,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const lidResults = result.list.filter(a => !!a.lid)
 			if (lidResults.length > 0) {
 				logger.trace('Storing LID maps from device call')
-				await signalRepository.lidMapping.storeLIDPNMappings(lidResults.map(a => ({ lid: a.lid as string, pn: a.id })))
+				const changedMappings = await signalRepository.lidMapping.storeLIDPNMappings(
+					lidResults.map(a => ({ lid: a.lid as string, pn: a.id }))
+				)
 
-				// Force-refresh sessions for newly mapped LIDs to align identity addressing
-				try {
-					const lids = lidResults.map(a => a.lid as string)
-					if (lids.length) {
+				// Force-refresh sessions only for LIDs whose mapping is genuinely new/changed, to align identity addressing
+				if (changedMappings.length > 0) {
+					try {
+						const lids = changedMappings.map(a => a.lid)
 						await assertSessions(lids, true)
+					} catch (e) {
+						logger.warn({ e, count: changedMappings.length }, 'failed to assert sessions for newly mapped LIDs')
 					}
-				} catch (e) {
-					logger.warn({ e, count: lidResults.length }, 'failed to assert sessions for newly mapped LIDs')
 				}
 			}
 
