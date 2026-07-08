@@ -39,6 +39,13 @@ export type SocketConfig = {
 	defaultQueryTimeoutMs: number | undefined
 	/** ping-pong interval for WS connection */
 	keepAliveIntervalMs: number
+	/**
+	 * Number of consecutive missed keep-alive windows tolerated before the connection
+	 * is considered lost and torn down. A single delayed pong (common behind proxies)
+	 * no longer kills the connection outright.
+	 * Default: 3
+	 */
+	keepAliveMaxStrikes: number
 	/** should baileys use the mobile api instead of the multi device api
 	 * @deprecated This feature has been removed
 	 */

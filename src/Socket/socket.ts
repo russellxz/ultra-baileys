@@ -440,6 +440,8 @@ export const makeSocket = (config: SocketConfig) => {
 	let lastDateRecv: Date
 	let epoch = 1
 	let keepAliveReq: NodeJS.Timeout
+	/** consecutive missed keep-alive windows for the current connection */
+	let keepAliveStrikes = 0
 	let qrTimer: NodeJS.Timeout
 	let closed = false
 
@@ -684,7 +686,7 @@ export const makeSocket = (config: SocketConfig) => {
 		closed = true
 		logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
 
-		clearInterval(keepAliveReq)
+		clearTimeout(keepAliveReq)
 		clearTimeout(qrTimer)
 
 		ws.removeAllListeners('close')
@@ -745,7 +747,28 @@ export const makeSocket = (config: SocketConfig) => {
 	const startKeepAliveRequest = () => {
 		// Adaptive keepalive threshold: add extra tolerance when using a proxy
 		const keepAliveGraceMs = useProxy ? Math.round(5000 * proxyMultiplier) : 5000
-		return (keepAliveReq = setInterval(() => {
+		const keepAliveMaxStrikes = config.keepAliveMaxStrikes ?? 3
+		// once a window is missed, recheck sooner than a full interval so a strike
+		// doesn't cost a full keepAliveIntervalMs to confirm
+		const keepAliveRecheckMs = Math.min(keepAliveGraceMs, keepAliveIntervalMs)
+
+		const sendPing = () =>
+			query({
+				tag: 'iq',
+				attrs: {
+					id: generateMessageTag(),
+					to: S_WHATSAPP_NET,
+					type: 'get',
+					xmlns: 'w:p'
+				},
+				content: [{ tag: 'ping', attrs: {} }]
+			}).catch(err => {
+				logger.error({ trace: err.stack }, 'error in sending keep alive')
+			})
+
+		keepAliveStrikes = 0
+
+		const check = () => {
 			if (!lastDateRecv) {
 				lastDateRecv = new Date()
 			}
@@ -753,28 +776,40 @@ export const makeSocket = (config: SocketConfig) => {
 			const diff = Date.now() - lastDateRecv.getTime()
 			/*
 				check if it's been a suspicious amount of time since the server responded with our last seen
-				it could be that the network is down
+				it could be that the network is down, or a single ping/pong got lost (common behind proxies) -
+				tolerate a few consecutive misses before tearing down the connection
 			*/
 			if (diff > keepAliveIntervalMs + keepAliveGraceMs) {
-				void end(new Boom('Connection was lost', { statusCode: DisconnectReason.connectionLost }))
-			} else if (ws.isOpen) {
+				keepAliveStrikes += 1
+				logger.warn({ diff, keepAliveStrikes, keepAliveMaxStrikes }, 'missed keep-alive window')
+
+				if (keepAliveMaxStrikes > 0 && keepAliveStrikes >= keepAliveMaxStrikes) {
+					void end(new Boom('Connection was lost', { statusCode: DisconnectReason.connectionLost }))
+					return
+				}
+
+				if (ws.isOpen) {
+					void sendPing()
+				}
+
+				// don't wait a full interval to find out if the retry above landed
+				keepAliveReq = setTimeout(check, keepAliveRecheckMs)
+				return
+			}
+
+			if (ws.isOpen) {
+				keepAliveStrikes = 0
 				// if its all good, send a keep alive request
-				query({
-					tag: 'iq',
-					attrs: {
-						id: generateMessageTag(),
-						to: S_WHATSAPP_NET,
-						type: 'get',
-						xmlns: 'w:p'
-					},
-					content: [{ tag: 'ping', attrs: {} }]
-				}).catch(err => {
-					logger.error({ trace: err.stack }, 'error in sending keep alive')
-				})
+				void sendPing()
 			} else {
 				logger.warn('keep alive called when WS not open')
 			}
-		}, keepAliveIntervalMs))
+
+			keepAliveReq = setTimeout(check, keepAliveIntervalMs)
+		}
+
+		keepAliveReq = setTimeout(check, keepAliveIntervalMs)
+		return keepAliveReq
 	}
 	/** i have no idea why this exists. pls enlighten me */
 	const sendPassiveIq = (tag: 'passive' | 'active') =>
