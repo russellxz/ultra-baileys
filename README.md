@@ -10,6 +10,51 @@
 >
 > Please check out https://whiskey.so/migrate-latest for more information.
 
+# 🚀 Baileys Enterprise Fork (Alta Escalabilidad)
+
+Este es un **Fork modificado** de la librería Baileys original, diseñado específicamente para resolver los mayores dolores de cabeza de los desarrolladores al crear bots de producción: **pérdidas de RAM, baneos accidentales, conversiones multimedia y caídas de conexión**.
+
+## 🔥 ¿Qué hace especial a este Fork?
+
+1. **Framework de Alto Nivel (DX):** Adiós a los callbacks anidados. Hemos introducido la clase `Bot`, `Context` y un sistema de **Middlewares**, haciendo que responder a un mensaje sea tan simple como: `ctx.reply('Hola')`.
+2. **Escalabilidad (Cero pérdida de RAM):** Baileys original guarda el historial de chats en memoria (RAM), lo cual crashea servidores rápidamente. Este fork usa un motor nativo en **SQLite** de alta velocidad (`better-sqlite3`), escribiendo los estados directamente en disco.
+3. **Resiliencia Extrema:** Hemos inyectado un sistema de **Exponential Backoff** y una cola de mensajes (`MessageQueue`). Si tu internet parpadea o se cae, el bot no pierde comandos; los encola y los envía cuando vuelve la red.
+4. **Gestor Multimedia Automágico:** ¡Olvídate de instalar FFmpeg! El fork incluye `ffmpeg-static` y funciones como `ctx.replySticker(buffer, { packname, author })` o `ctx.replyVoiceNote(buffer)` que procesan audio/video directamente.
+5. **Analíticas y Fantasmas:** Incluye un `StatsManager` silencioso que rastrea quiénes hablan, los stickers más usados y expone el método `getGhosts(groupId)` para encontrar a los miembros inactivos de un grupo.
+
+## ⚠️ Guía de Integración y Migración
+
+> **¡Atención!** Si intentas reemplazar el paquete original de Baileys con este fork en un bot antiguo, **algunas funciones darán error** si dependías del viejo `makeInMemoryStore`.
+
+Para integrar el poder de este fork, **debes usar la nueva estructura orientada a objetos:**
+
+```typescript
+import { Bot, useMultiFileAuthState } from '@whiskeysockets/baileys'
+
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState('sesion')
+
+    // El Bot inicia automáticamente SQLite, la Cola y las Analíticas
+    const bot = new Bot({ auth: state })
+
+    bot.command('!fantasmas', async (ctx) => {
+        const fantasmas = bot.stats.getGhosts(ctx.remoteJid, 30) // 30 días inactivos
+        await ctx.reply(`Encontré ${fantasmas.length} fantasmas en este grupo.`)
+    })
+    
+    bot.command('!sticker', async (ctx) => {
+        // Asumiendo que obtuviste un buffer de imagen
+        await ctx.replySticker(buffer, { packname: 'SuperBot', author: '@luis' })
+    })
+
+    bot.socket?.ev.on('creds.update', saveCreds)
+    await bot.start()
+}
+```
+
+---
+*(La documentación oficial original de Baileys continúa abajo)*
+
 # Important Note
 This is a temporary README.md, the new guide is in development and will this file will be replaced with .github/README.md (already a default on GitHub).
 
