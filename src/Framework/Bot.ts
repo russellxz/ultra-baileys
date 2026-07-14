@@ -13,6 +13,8 @@ export type MiddlewareFn = (ctx: Context, next: () => Promise<void>) => Promise<
 
 export type BotConfig = UserFacingSocketConfig & {
 	enableStats?: boolean
+	rateLimitMs?: number
+	autoReadMs?: number
 }
 
 type EnqueuedMessage = {
@@ -41,6 +43,8 @@ export class Bot {
 
 	// Message Queue
 	private messageQueue: EnqueuedMessage[] = []
+	private sendQueue: EnqueuedMessage[] = []
+	private isProcessingSendQueue: boolean = false
 
 	constructor(config: BotConfig) {
 		this.store = new SQLiteStore()
@@ -79,28 +83,66 @@ export class Bot {
 	}
 
 	public async sendMessage(jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}): Promise<any> {
-		if (this.isConnected && this.socket) {
-			return this.socket.sendMessage(jid, content, options)
-		} else {
-			// Queue the message
-			return new Promise((resolve, reject) => {
-				this.messageQueue.push({ jid, content, options, resolve, reject })
-				console.log(`[Bot] Socket no conectado. Mensaje para ${jid} encolado. (Cola: ${this.messageQueue.length})`)
-			})
+		return new Promise((resolve, reject) => {
+			const msg: EnqueuedMessage = { jid, content, options, resolve, reject }
+			if (this.isConnected && this.socket) {
+				if (this.config.rateLimitMs && this.config.rateLimitMs > 0) {
+					this.sendQueue.push(msg)
+					this.processSendQueue()
+				} else {
+					this.socket.sendMessage(jid, content, options).then(resolve).catch(reject)
+				}
+			} else {
+				// Queue the message for reconnection
+				this.messageQueue.push(msg)
+				console.log(`[Bot] Socket no conectado. Mensaje para ${jid} encolado. (Cola de reconexión: ${this.messageQueue.length})`)
+			}
+		})
+	}
+
+	private async processSendQueue() {
+		if (this.isProcessingSendQueue || this.sendQueue.length === 0 || !this.isConnected || !this.socket) return
+		
+		this.isProcessingSendQueue = true
+		
+		while (this.sendQueue.length > 0 && this.isConnected && this.socket) {
+			const msg = this.sendQueue.shift()
+			if (msg) {
+				try {
+					const result = await this.socket.sendMessage(msg.jid, msg.content, msg.options)
+					msg.resolve(result)
+				} catch (err) {
+					msg.reject(err)
+				}
+				
+				if (this.sendQueue.length > 0 && this.config.rateLimitMs) {
+					await new Promise(resolve => setTimeout(resolve, this.config.rateLimitMs))
+				}
+			}
 		}
+		
+		this.isProcessingSendQueue = false
 	}
 
 	private drainQueue() {
 		if (!this.isConnected || !this.socket || this.messageQueue.length === 0) return
 		
-		console.log(`[Bot] Drenando cola de mensajes: ${this.messageQueue.length} pendientes.`)
+		console.log(`[Bot] Drenando cola de reconexión: ${this.messageQueue.length} pendientes.`)
 		const queueToProcess = [...this.messageQueue]
 		this.messageQueue = []
 
 		for (const msg of queueToProcess) {
-			this.socket.sendMessage(msg.jid, msg.content, msg.options)
-				.then(msg.resolve)
-				.catch(msg.reject)
+			if (this.config.rateLimitMs && this.config.rateLimitMs > 0) {
+				this.sendQueue.push(msg)
+			} else {
+				this.socket.sendMessage(msg.jid, msg.content, msg.options)
+					.then(msg.resolve)
+					.catch(msg.reject)
+			}
+		}
+		
+		if (this.config.rateLimitMs && this.config.rateLimitMs > 0) {
+			this.processSendQueue()
 		}
 	}
 
@@ -111,6 +153,11 @@ export class Bot {
 			if (type !== 'notify') return
 			for (const msg of messages) {
 				const ctx = new Context(this, msg)
+				
+				// Smart Read (Auto-Lectura)
+				if (this.config.autoReadMs !== undefined && this.config.autoReadMs >= 0) {
+					ctx.read(this.config.autoReadMs).catch(err => console.error('[Bot] Error en auto-lectura:', err))
+				}
 
 				// Analíticas: Observar el mensaje antes de los middlewares
 				if (this.stats && ctx.remoteJid && isJidGroup(ctx.remoteJid)) {

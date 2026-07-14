@@ -64,4 +64,14 @@ export class Context {
 			ptt: true 
 		}, { quoted: this.message })
 	}
+
+	public async read(delayMs?: number) {
+		if (!this.bot.socket || !this.message.key) return
+		
+		if (delayMs && delayMs > 0) {
+			await new Promise(resolve => setTimeout(resolve, delayMs))
+		}
+		
+		return this.bot.socket.readMessages([this.message.key])
+	}
 }
