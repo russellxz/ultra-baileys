@@ -113,3 +113,17 @@ export const useSQLiteAuthState = async (
 		}
 	}
 }
+
+/**
+ * Utility to easily and safely wipe an SQLite auth state database.
+ * @param databasePath The path to the SQLite database file
+ */
+export const clearSQLiteAuthState = (databasePath: string): void => {
+	try {
+		const db = new Database(databasePath)
+		db.exec('DROP TABLE IF EXISTS auth_state')
+		db.close()
+	} catch (error) {
+		console.warn(`Failed to clear SQLite auth state at ${databasePath}:`, error)
+	}
+}

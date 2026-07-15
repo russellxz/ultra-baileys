@@ -49,9 +49,10 @@ export class Bot {
 	private sendQueue: EnqueuedMessage[] = []
 	private isProcessingSendQueue: boolean = false
 
-	// Event listeners registered via onConnection/onCreds
+	// Event listeners registered via onConnection/onCreds/onQR
 	private connectionHandlers: Array<(update: { connection?: string, lastDisconnect?: { error?: Error } }) => void> = []
 	private credsHandlers: Array<() => void> = []
+	private qrHandlers: Array<(qr: string) => void> = []
 
 	constructor(config: BotConfig) {
 		this.store = new SQLiteStore(config.dbPath)
@@ -106,6 +107,14 @@ export class Bot {
 	 */
 	public onCreds(handler: () => void) {
 		this.credsHandlers.push(handler)
+	}
+
+	/**
+	 * Register a handler for when a new QR code is generated.
+	 * This makes it easy to forward the QR string to a frontend API.
+	 */
+	public onQR(handler: (qr: string) => void) {
+		this.qrHandlers.push(handler)
 	}
 
 	public async sendMessage(
@@ -214,7 +223,17 @@ export class Bot {
 		})
 
 		this.socket.ev.on('connection.update', (update) => {
-			const { connection, lastDisconnect } = update
+			const { connection, lastDisconnect, qr } = update
+
+			if (qr) {
+				for (const handler of this.qrHandlers) {
+					try {
+						handler(qr)
+					} catch (err) {
+						this.logger.error?.({ err }, 'qr handler threw')
+					}
+				}
+			}
 
 			if (connection === 'open') {
 				this.logger.info('connection established')
@@ -232,8 +251,19 @@ export class Bot {
 				this.logger.warn({ statusCode }, 'connection closed')
 
 				if (shouldReconnect) {
-					this.reconnectAttempts++
-					const delay = Math.min(this.MAX_RECONNECT_DELAY, this.BASE_RECONNECT_DELAY * (2 ** (this.reconnectAttempts - 1)))
+					// If the QR code timed out (408), restart immediately without exponential backoff
+					// to keep the QR alive infinitely.
+					if (statusCode === DisconnectReason.timedOut) {
+						this.logger.info('QR Code timed out. Restarting connection immediately.')
+						this.reconnectAttempts = 0
+					} else {
+						this.reconnectAttempts++
+					}
+					
+					const delay = statusCode === DisconnectReason.timedOut 
+						? 1000 
+						: Math.min(this.MAX_RECONNECT_DELAY, this.BASE_RECONNECT_DELAY * (2 ** (this.reconnectAttempts - 1)))
+					
 					this.logger.info({ delay, attempt: this.reconnectAttempts }, 'scheduling reconnect')
 
 					setTimeout(() => {
@@ -274,6 +304,22 @@ export class Bot {
 		this.isProcessingSendQueue = false
 		this.stats?.stop()
 		this.store.close()
+	}
+
+	/**
+	 * Permanently logs out the current session from WhatsApp,
+	 * terminates the socket, and destroys the local SQLite database to prevent leaks.
+	 */
+	public async logout() {
+		this.logger.info('Logging out and destroying session...')
+		try {
+			await this.socket?.logout()
+		} catch (err) {
+			this.logger.error({ err }, 'Error during socket logout')
+		}
+		
+		this.socket?.end(undefined)
+		this.close()
 	}
 
 	private async executeMiddlewares(ctx: Context) {
