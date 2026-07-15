@@ -21,6 +21,7 @@
 ## Tabla de Contenidos
 
 - [Por que Baileys-next](#-por-que-baileys-next)
+- [Antes vs Ahora (Comparaciones)](#-antes-vs-ahora)
 - [Arquitectura](#-arquitectura)
 - [Instalacion](#-instalacion)
 - [Guia Rapida](#-guia-rapida)
@@ -36,6 +37,7 @@
 - [Rate Limiter y Anti-Ban](#-rate-limiter-y-anti-ban)
 - [Analiticas y Fantasmas](#-analiticas-y-fantasmas)
 - [Multimedia (Stickers y Notas de Voz)](#-multimedia-stickers-y-notas-de-voz)
+- [Sesiones Persistentes](#-sesiones-persistentes)
 - [Acceso a Bajo Nivel](#-acceso-a-bajo-nivel)
 - [Evitar Problemas Comunes](#-evitar-problemas-comunes)
 - [Migracion desde Baileys Original](#-migracion-desde-baileys-original)
@@ -57,6 +59,221 @@ La libreria original de Baileys es un motor brillante, pero fue disenada como un
 | Multimedia | Requiere FFmpeg manual en el sistema | `ffmpeg-static` incluido, 0 instalacion extra |
 | Analiticas de grupo | No existe | StatsManager con deteccion de "fantasmas" |
 | Experiencia de desarrollo | Callbacks y eventos crudos | API de alto nivel con `Bot`, `Context` y Middlewares |
+| Logging | No estandarizado | Logger pino-compatible (structured JSON) |
+| Credenciales | Se pierden si registras listener en mal momento | `bot.onCreds()` garantiza el registro correcto |
+| Mensajes propios | El bot se responde a si mismo si no filtras | Filtrado automatico de `msg.key.fromMe` |
+
+---
+
+## 🔄 Antes vs Ahora
+
+### Responder a un Mensaje
+
+**Antes (Baileys original) — 15 lineas:**
+```typescript
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
+import { Boom } from '@hapi/boom'
+
+async function start() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth')
+    const sock = makeWASocket({ auth: state, printQRInTerminal: true })
+
+    sock.ev.on('creds.update', saveCreds)
+    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
+            if (shouldReconnect) start()
+        }
+    })
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return
+        for (const msg of messages) {
+            if (msg.key.fromMe) continue
+            if (msg.message?.conversation === '!ping') {
+                await sock.sendMessage(msg.key.remoteJid!, { text: 'Pong!' }, { quoted: msg })
+            }
+        }
+    })
+}
+start()
+```
+
+**Ahora (Baileys-next) — 8 lineas:**
+```typescript
+import { Bot, useMultiFileAuthState } from 'baileys-next'
+
+async function start() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth')
+    const bot = new Bot({ auth: state, printQRInTerminal: true })
+
+    bot.onCreds(saveCreds) // Seguro antes de start()
+    bot.command('!ping', async (ctx) => ctx.reply({ text: 'Pong!' }))
+    await bot.start() // Reconexion automatica incluida
+}
+start()
+```
+
+---
+
+### Reconexion tras Caida
+
+**Antes — Debes gestionar manualmente:**
+```typescript
+sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+    if (connection === 'close') {
+        const error = lastDisconnect?.error as Boom
+        const statusCode = error?.output?.statusCode
+        if (statusCode !== DisconnectReason.loggedOut) {
+            // Reconectar... pero sin retardo. Si WhatsApp te bloquea
+            // temporalmente, este loop infinito empeora todo.
+            start()
+        }
+    }
+})
+```
+
+**Ahora — Automatico con Exponential Backoff:**
+```typescript
+const bot = new Bot({ auth: state })
+await bot.start()
+// Listo. Si se cae la conexion:
+// Intento 1: espera 2s
+// Intento 2: espera 4s
+// Intento 3: espera 8s
+// ... hasta maximo 60s
+// Si es LoggedOut (sesion cerrada), NO reconecta.
+```
+
+---
+
+### Crear un Sticker
+
+**Antes — Instalar FFmpeg manualmente + 20 lineas de conversion:**
+```typescript
+// Requisito: apt install ffmpeg (o brew install ffmpeg)
+import { exec } from 'child_process'
+import fs from 'fs'
+
+// Descargar el media...
+const buffer = await downloadMediaMessage(msg, 'buffer', {})
+fs.writeFileSync('/tmp/input.jpg', buffer)
+
+// Convertir a WebP con shell
+exec('ffmpeg -i /tmp/input.jpg -vcodec libwebp -vf scale=512:512 /tmp/output.webp', async () => {
+    const sticker = fs.readFileSync('/tmp/output.webp')
+    await sock.sendMessage(jid, { sticker }, { quoted: msg })
+    // Y los metadatos EXIF? Otro paquete mas...
+})
+```
+
+**Ahora — 1 linea (FFmpeg incluido):**
+```typescript
+bot.command('!sticker', async (ctx) => {
+    await ctx.replySticker(imageBuffer, { packname: 'MiBot', author: '@luis' })
+    // FFmpeg + conversion + metadatos EXIF = todo incluido
+})
+```
+
+---
+
+### Guardar Estado por Chat
+
+**Antes — Variable en memoria (se pierde al reiniciar):**
+```typescript
+const estados = new Map<string, any>() // Se pierde al reiniciar
+
+sock.ev.on('messages.upsert', async ({ messages }) => {
+    for (const msg of messages) {
+        const jid = msg.key.remoteJid!
+        if (msg.message?.conversation === '!recordar') {
+            estados.set(jid, { nota: 'algo' })
+        }
+        if (msg.message?.conversation === '!nota') {
+            const data = estados.get(jid)
+            // Despues del reinicio: undefined
+        }
+    }
+})
+```
+
+**Ahora — Persistente en SQLite (sobrevive reinicios):**
+```typescript
+bot.command('!recordar', async (ctx) => {
+    ctx.session.set({ nota: 'algo' }) // Guardado en disco
+})
+
+bot.command('!nota', async (ctx) => {
+    const data = ctx.session.get<{ nota: string }>()
+    await ctx.reply({ text: data?.nota ?? 'Sin notas' })
+    // Despues del reinicio: la nota sigue ahi
+})
+```
+
+---
+
+### Detectar Fantasmas de un Grupo
+
+**Antes — No existia:**
+```typescript
+// No habia forma de saber quien nunca habla.
+// Tenias que construir tu propia base de datos,
+// registrar cada mensaje manualmente, comparar
+// con la lista de participantes...
+// Facilmente +100 lineas de codigo.
+```
+
+**Ahora — 3 lineas:**
+```typescript
+bot.command('!fantasmas', async (ctx) => {
+    const ghosts = await bot.stats.getGhosts(ctx.remoteJid, 30)
+    await ctx.reply({ text: `👻 ${ghosts.length} fantasmas encontrados` })
+})
+```
+
+---
+
+### Enviar Multiples Mensajes sin ser Baneado
+
+**Antes — Sin proteccion:**
+```typescript
+// Enviar 50 mensajes en un loop = ban instantaneo
+for (const jid of contactos) {
+    await sock.sendMessage(jid, { text: 'Hola!' })
+    // WhatsApp detecta envios a 0ms de intervalo
+}
+```
+
+**Ahora — Rate Limiter automatico:**
+```typescript
+const bot = new Bot({ auth: state, rateLimitMs: 2000 })
+
+// Mismo loop, pero internamente la libreria espera 2s entre cada envio
+for (const jid of contactos) {
+    await bot.sendMessage(jid, { text: 'Hola!' })
+    // La cola interna los despacha a 2000ms de intervalo
+}
+```
+
+---
+
+### Registrar Credenciales
+
+**Antes — Bug silencioso si lo haces antes de conectar:**
+```typescript
+const sock = makeWASocket({ auth: state })
+
+// BUG: Si haces esto antes de que el socket conecte, funciona
+// PERO si alguien hace bot.socket?.ev.on(...) antes de start(),
+// como socket es undefined, el listener nunca se registra!
+sock.ev.on('creds.update', saveCreds)
+```
+
+**Ahora — Garantizado:**
+```typescript
+const bot = new Bot({ auth: state })
+bot.onCreds(saveCreds) // Seguro. Se registra internamente y se ejecuta siempre.
+await bot.start()
+```
 
 ---
 
@@ -67,7 +284,7 @@ graph TB
     subgraph "Tu Codigo"
         DEV["bot.command('!hola', handler)"]
     end
-    
+
     subgraph "Baileys-next Framework"
         BOT[Bot]
         MW[Middleware Pipeline]
@@ -79,16 +296,16 @@ graph TB
         MM[MediaManager]
         SQL[(SQLite Store)]
     end
-    
+
     subgraph "Baileys Core"
         SOCK[makeWASocket]
         WS[WebSocket / Noise Protocol]
     end
-    
+
     subgraph "WhatsApp"
         WA[WhatsApp Web Servers]
     end
-    
+
     DEV --> BOT
     BOT --> MW
     MW --> CTX
@@ -115,18 +332,33 @@ sequenceDiagram
     participant STATS as StatsManager
     participant MW as Middlewares
     participant CTX as Context
-    
+
     WA->>WS: Mensaje cifrado
     WS->>BOT: messages.upsert (notify)
+    Note over BOT: Filtra msg.key.fromMe
     BOT->>CTX: new Context(bot, msg)
     BOT->>AR: ctx.read(autoReadMs)
     BOT->>STATS: observeMessage()
     BOT->>MW: executeMiddlewares(ctx)
     MW->>CTX: handler(ctx)
     CTX->>BOT: bot.sendMessage()
-    BOT->>BOT: Rate Limiter (cola)
+    Note over BOT: Rate Limiter (cola)
     BOT->>WS: socket.sendMessage()
     WS->>WA: Respuesta cifrada
+```
+
+**Flujo de reconexion:**
+
+```mermaid
+graph LR
+    OPEN[Conectado] -->|Red cae| CLOSE[Desconectado]
+    CLOSE -->|2s| R1[Intento 1]
+    R1 -->|Falla → 4s| R2[Intento 2]
+    R2 -->|Falla → 8s| R3[Intento 3]
+    R3 -->|Falla → 16s| R4[...]
+    R4 -->|Max 60s| RN[Intento N]
+    RN -->|Exito| OPEN
+    CLOSE -->|LoggedOut 401| STOP[No reconecta]
 ```
 
 ---
@@ -167,11 +399,11 @@ async function main() {
         printQRInTerminal: true
     })
 
+    bot.onCreds(saveCreds)
     bot.command('!ping', async (ctx) => {
         await ctx.reply({ text: 'Pong! 🏓' })
     })
 
-    bot.socket?.ev.on('creds.update', saveCreds)
     await bot.start()
 }
 
@@ -189,36 +421,28 @@ async function main() {
     const bot = new Bot({
         auth: state,
         printQRInTerminal: true,
-        // === Escudos Anti-Ban ===
-        rateLimitMs: 1500,   // 1.5 segundos entre cada mensaje enviado
-        autoReadMs: 2000,    // Marca como "leido" 2 segundos despues de recibir
-        // === Analiticas ===
-        enableStats: true    // Activar rastreo de actividad por grupo
+        rateLimitMs: 1500,   // Escudo Anti-Ban
+        autoReadMs: 2000,    // Lectura humana
+        enableStats: true,   // Analiticas
+        dbPath: './data/bot.db' // Ruta de la base de datos
     })
+
+    bot.onCreds(saveCreds)
 
     // --- Middleware global: Logger ---
     bot.use(async (ctx, next) => {
-        console.log(`[${new Date().toISOString()}] Mensaje de: ${ctx.remoteJid}`)
+        console.log(`[${new Date().toISOString()}] ${ctx.sender} -> ${ctx.remoteJid}`)
         await next()
     })
 
     // --- Comandos ---
     bot.command('!ping', async (ctx) => {
-        await ctx.reply({ text: 'Pong! 🏓' })
-    })
-
-    bot.command('!sticker', async (ctx) => {
-        const quoted = ctx.message.message?.imageMessage
-        if (!quoted) {
-            await ctx.reply({ text: 'Responde a una imagen con !sticker' })
-            return
-        }
-        // La libreria convierte la imagen a WebP automaticamente
-        // await ctx.replySticker(imageBuffer, { packname: 'MiBot', author: '@luis' })
+        const start = Date.now()
+        await ctx.reply({ text: `Pong! 🏓 (${Date.now() - start}ms)` })
     })
 
     bot.command('!fantasmas', async (ctx) => {
-        if (!bot.stats) return
+        if (!ctx.isGroup || !bot.stats) return
         const ghosts = await bot.stats.getGhosts(ctx.remoteJid, 30)
         const total = ghosts.filter(g => g.isTotalGhost).length
         const inactive = ghosts.filter(g => !g.isTotalGhost).length
@@ -231,11 +455,13 @@ async function main() {
     })
 
     bot.command('!top', async (ctx) => {
-        if (!bot.stats) return
+        if (!ctx.isGroup || !bot.stats) return
         const top = bot.stats.getTopUsers(ctx.remoteJid, 5)
-        const lines = top.map((u, i) => `${i + 1}. @${u.userJid.split('@')[0]} — ${u.messageCount} msgs`)
+        const lines = top.map((u, i) =>
+            `${i + 1}. @${u.userJid.split('@')[0]} — ${u.messageCount} msgs`
+        )
         await ctx.reply({
-            text: `🏆 Top 5 mas activos:\n${lines.join('\n')}`,
+            text: `🏆 Top 5:\n${lines.join('\n')}`,
             mentions: top.map(u => u.userJid)
         })
     })
@@ -244,7 +470,6 @@ async function main() {
         await ctx.react('❤️')
     })
 
-    // --- Estado por chat (Session) ---
     bot.command('!recordar', async (ctx) => {
         const args = ctx.text?.replace('!recordar ', '') || ''
         ctx.session.set({ nota: args })
@@ -253,18 +478,15 @@ async function main() {
 
     bot.command('!nota', async (ctx) => {
         const data = ctx.session.get<{ nota: string }>()
-        await ctx.reply({ text: data?.nota ? `📝 Tu nota: "${data.nota}"` : 'No tienes notas.' })
+        await ctx.reply({ text: data?.nota ? `📝 "${data.nota}"` : 'Sin notas.' })
     })
 
-    // --- Escuchar todos los textos ---
-    bot.onText(async (ctx, next) => {
-        // Este handler se ejecuta para TODOS los mensajes de texto
-        // Util para anti-spam, logs, etc.
-        await next()
+    // Cleanup al cerrar
+    process.on('SIGINT', () => {
+        bot.close()
+        process.exit(0)
     })
 
-    // --- Guardar credenciales ---
-    bot.socket?.ev.on('creds.update', saveCreds)
     await bot.start()
 }
 
@@ -284,15 +506,17 @@ Extiende `UserFacingSocketConfig` de Baileys (todas las opciones originales sigu
 | `auth` | `AuthenticationState` | **requerido** | Estado de autenticacion (de `useMultiFileAuthState`) |
 | `printQRInTerminal` | `boolean` | `false` | Muestra el codigo QR en la terminal |
 | `enableStats` | `boolean` | `true` | Activa el `StatsManager` para analiticas de grupo |
-| `rateLimitMs` | `number` | `undefined` | Milisegundos de pausa entre cada mensaje enviado. Si es `undefined` o `0`, no se aplica limite |
-| `autoReadMs` | `number` | `undefined` | Milisegundos de retardo antes de marcar mensajes como "leidos". Si es `undefined`, no se auto-lee |
-| `browser` | `[string, string, string]` | `['Mac OS', 'Chrome', '121']` | Identidad del navegador para la conexion |
+| `rateLimitMs` | `number` | `undefined` | Milisegundos entre cada mensaje enviado. `undefined` = sin limite |
+| `autoReadMs` | `number` | `undefined` | Retardo antes de marcar como leido. `undefined` = no auto-lee |
+| `dbPath` | `string` | `'baileys_store.db'` | Ruta del archivo SQLite |
+| `browser` | `[string, string, string]` | `['Mac OS', 'Chrome', '...']` | Identidad del navegador |
+| `logger` | `ILogger` | `console` | Logger pino-compatible para depuracion |
 
 ---
 
 ### Clase Bot
 
-La clase principal. Orquesta el socket, los middlewares, la base de datos y todas las funciones.
+La clase principal. Orquesta socket, middlewares, base de datos y todas las funciones.
 
 ```typescript
 const bot = new Bot(config: BotConfig)
@@ -300,14 +524,17 @@ const bot = new Bot(config: BotConfig)
 
 | Metodo / Propiedad | Retorno | Descripcion |
 |---|---|---|
-| `bot.start()` | `Promise<void>` | Conecta al WebSocket de WhatsApp y comienza a escuchar |
-| `bot.command(cmd, handler)` | `void` | Registra un handler que se activa cuando un mensaje empieza con `cmd` |
-| `bot.onText(handler)` | `void` | Registra un handler para todos los mensajes de texto |
+| `bot.start()` | `Promise<void>` | Conecta a WhatsApp y empieza a escuchar |
+| `bot.close()` | `void` | Shutdown graceful: cierra DB, vacia colas |
+| `bot.command(cmd, handler)` | `void` | Registra handler para mensajes que empiecen con `cmd` |
+| `bot.onText(handler)` | `void` | Registra handler para todos los mensajes de texto |
 | `bot.use(middleware)` | `void` | Registra un middleware (ver seccion Middlewares) |
-| `bot.sendMessage(jid, content, opts?)` | `Promise<any>` | Envia un mensaje (pasa por Rate Limiter si esta activo) |
+| `bot.onCreds(handler)` | `void` | Registra handler para guardar credenciales (seguro antes de start) |
+| `bot.onConnection(handler)` | `void` | Registra handler para cambios de conexion (seguro antes de start) |
+| `bot.sendMessage(jid, content, opts?)` | `Promise<unknown>` | Envia mensaje (pasa por Rate Limiter si activo) |
 | `bot.socket` | `WASocket \| undefined` | Acceso directo al socket de Baileys (bajo nivel) |
 | `bot.store` | `SQLiteStore` | Instancia de la base de datos SQLite |
-| `bot.stats` | `StatsManager \| undefined` | Instancia del gestor de analiticas (si `enableStats` es true) |
+| `bot.stats` | `StatsManager \| undefined` | Gestor de analiticas (si `enableStats` es true) |
 | `bot.session` | `SessionManager` | Gestor de sesiones persistentes por chat |
 | `bot.isConnected` | `boolean` | Estado actual de la conexion |
 
@@ -315,40 +542,40 @@ const bot = new Bot(config: BotConfig)
 
 ### Clase Context (`ctx`)
 
-Envuelve cada mensaje entrante con metodos convenientes. Se pasa como primer argumento a cada handler y middleware.
-
-```typescript
-bot.command('!test', async (ctx: Context) => { ... })
-```
+Envuelve cada mensaje entrante con metodos convenientes. Se pasa como primer argumento a handlers y middlewares.
 
 | Metodo / Propiedad | Retorno | Descripcion |
 |---|---|---|
-| `ctx.message` | `WAMessage` | El mensaje crudo original de WhatsApp |
-| `ctx.remoteJid` | `string` | El JID del chat (grupo o privado) |
-| `ctx.text` | `string \| undefined` | Texto del mensaje (extrae de `conversation` o `extendedTextMessage`) |
+| `ctx.message` | `WAMessage` | Mensaje crudo original de WhatsApp |
+| `ctx.remoteJid` | `string` | JID del chat (grupo o privado) |
+| `ctx.sender` | `string` | JID del remitente (funciona en grupos y privados) |
+| `ctx.isGroup` | `boolean` | `true` si es un grupo (`@g.us`) |
+| `ctx.text` | `string \| undefined` | Texto del mensaje |
 | `ctx.bot` | `Bot` | Referencia al Bot padre |
-| `ctx.reply(content, opts?)` | `Promise<any>` | Responde al mensaje (con quote automatico) |
-| `ctx.react(emoji)` | `Promise<any>` | Reacciona al mensaje con un emoji |
-| `ctx.replySticker(buffer, meta?)` | `Promise<any>` | Convierte imagen/video a WebP y lo envia como sticker |
-| `ctx.replyVoiceNote(buffer)` | `Promise<any>` | Convierte audio a Opus/OGG y lo envia como nota de voz |
-| `ctx.read(delayMs?)` | `Promise<any>` | Marca el mensaje como leido, con un retardo opcional |
-| `ctx.session.get<T>()` | `T \| null` | Obtiene los datos de sesion del chat actual |
-| `ctx.session.set(data)` | `void` | Guarda datos de sesion para el chat actual |
-| `ctx.session.update(data)` | `void` | Actualiza (merge) los datos de sesion |
-| `ctx.session.delete()` | `void` | Elimina la sesion del chat actual |
+| `ctx.reply(content, opts?)` | `Promise<unknown>` | Responde al mensaje (con quote automatico) |
+| `ctx.send(content, opts?)` | `Promise<unknown>` | Envia al mismo chat sin citar |
+| `ctx.react(emoji)` | `Promise<unknown>` | Reacciona con un emoji |
+| `ctx.replySticker(buffer, meta?)` | `Promise<unknown>` | Envia sticker WebP (convierte automaticamente) |
+| `ctx.replyVoiceNote(buffer)` | `Promise<unknown>` | Envia nota de voz Opus/OGG |
+| `ctx.read(delayMs?)` | `Promise<unknown>` | Marca como leido con retardo opcional |
+| `ctx.session.get<T>()` | `T \| undefined` | Obtiene datos de sesion del chat |
+| `ctx.session.set(data)` | `void` | Guarda datos de sesion |
+| `ctx.session.update(data)` | `void` | Merge parcial de datos |
+| `ctx.session.delete()` | `void` | Elimina la sesion |
 
 ---
 
 ### StatsManager
 
-Motor de analiticas silencioso. Almacena estadisticas de actividad en SQLite.
+Motor de analiticas silencioso. Almacena estadisticas en SQLite, indexadas por grupo.
 
 | Metodo | Retorno | Descripcion |
 |---|---|---|
-| `stats.getTopUsers(groupJid, limit?)` | `UserStats[]` | Los `limit` usuarios mas activos de un grupo |
-| `stats.getTopStickers(groupJid, limit?)` | `UserStats[]` | Los `limit` usuarios que mas stickers envian |
-| `stats.getGhosts(groupJid, inactiveDays?)` | `Promise<Ghost[]>` | Miembros que no han hablado en `inactiveDays` dias |
-| `stats.observeMessage(groupJid, userJid, isSticker)` | `void` | Registra un mensaje (se llama automaticamente) |
+| `stats.getTopUsers(groupJid, limit?)` | `UserStats[]` | Los `limit` usuarios mas activos |
+| `stats.getTopStickers(groupJid, limit?)` | `UserStats[]` | Los que mas stickers envian |
+| `stats.getGhosts(groupJid, days?)` | `Promise<GhostEntry[]>` | Miembros inactivos en `days` dias |
+| `stats.getUserStats(groupJid, userJid)` | `UserStats \| undefined` | Stats de un usuario especifico |
+| `stats.observeMessage(groupJid, userJid, isSticker)` | `void` | Registra mensaje (automatico) |
 
 **Interfaces:**
 ```typescript
@@ -359,10 +586,10 @@ interface UserStats {
     lastActive: number // timestamp
 }
 
-interface Ghost {
+interface GhostEntry {
     jid: string
     isTotalGhost: boolean  // true = nunca ha enviado un mensaje
-    lastActive?: number    // timestamp de su ultimo mensaje
+    lastActive?: number    // timestamp del ultimo mensaje
 }
 ```
 
@@ -370,478 +597,344 @@ interface Ghost {
 
 ### SessionManager
 
-Almacena datos arbitrarios por chat (util para flujos multi-paso, estados de conversacion, etc).
+Estado persistente por chat. Util para flujos multi-paso, estados de conversacion, encuestas, etc.
 
 | Metodo | Retorno | Descripcion |
 |---|---|---|
-| `session.get<T>(jid)` | `T \| null` | Obtiene los datos serializados de una sesion |
-| `session.set(jid, data)` | `void` | Guarda datos serializados (reemplaza todo) |
-| `session.update(jid, data)` | `void` | Hace merge parcial de datos |
-| `session.delete(jid)` | `void` | Elimina la sesion |
+| `session.get<T>(jid)` | `T \| undefined` | Obtiene datos |
+| `session.set(jid, data)` | `void` | Guarda (reemplaza todo) |
+| `session.update(jid, data)` | `void` | Merge parcial |
+| `session.delete(jid)` | `void` | Elimina |
+| `session.has(jid)` | `boolean` | Verifica existencia |
 
 ---
 
 ### MediaManager
 
-Utilidad estatica para conversion de multimedia. No requiere instanciacion.
+Utilidad estatica para conversion multimedia. No requiere instanciacion.
 
 | Metodo | Retorno | Descripcion |
 |---|---|---|
-| `MediaManager.convertToSticker(input, meta?)` | `Promise<Buffer>` | Convierte imagen o video a WebP (512x512) con metadatos EXIF |
-| `MediaManager.convertToVoiceNote(input)` | `Promise<Buffer>` | Convierte audio a Opus/OGG compatible con WhatsApp PTT |
-
-**StickerMetadata:**
-```typescript
-interface StickerMetadata {
-    packname?: string  // Nombre del paquete de stickers
-    author?: string    // Nombre del autor
-}
-```
+| `MediaManager.convertToSticker(input, meta?)` | `Promise<Buffer>` | Imagen/video a WebP (512x512) con EXIF |
+| `MediaManager.convertToVoiceNote(input)` | `Promise<Buffer>` | Audio a Opus/OGG mono 48kHz |
 
 ---
 
 ## 🔗 Middlewares
 
-Baileys-next usa un pipeline de middlewares inspirado en Koa/Express. Cada middleware recibe `ctx` y una funcion `next()` que ejecuta el siguiente middleware en la cadena.
+Pipeline inspirado en Koa/Express. Cada middleware recibe `ctx` y `next()`.
 
 ```mermaid
 graph LR
-    MSG[Mensaje Entrante] --> MW1[Middleware 1: Logger]
-    MW1 -->|next| MW2[Middleware 2: Auth]
-    MW2 -->|next| MW3[Middleware 3: Command Handler]
-    MW3 -->|next| END[Fin del Pipeline]
+    MSG[Mensaje] --> MW1[Logger]
+    MW1 -->|next| MW2[Auth]
+    MW2 -->|next| MW3[Command]
+    MW3 -->|next| END[Fin]
+    MW2 -->|sin next| BLOCK[Bloqueado]
 ```
 
 ### Ejemplo: Logger + Filtro de Admin
 
 ```typescript
-// 1. Logger global (se ejecuta siempre)
+// Logger global
 bot.use(async (ctx, next) => {
     const start = Date.now()
     await next()
-    const ms = Date.now() - start
-    console.log(`[${ms}ms] ${ctx.remoteJid}: ${ctx.text}`)
+    console.log(`[${Date.now() - start}ms] ${ctx.sender}: ${ctx.text}`)
 })
 
-// 2. Filtro: Solo permitir admins en ciertos comandos
+// Filtro de admin (no llama next() si no es admin)
 bot.use(async (ctx, next) => {
     if (ctx.text?.startsWith('!admin')) {
         const admins = ['5491100000000@s.whatsapp.net']
-        const sender = ctx.message.key.participant || ctx.message.key.remoteJid || ''
-        if (!admins.includes(sender)) {
-            await ctx.reply({ text: '⛔ No tienes permisos.' })
-            return // NO llama a next(), bloquea la cadena
+        if (!admins.includes(ctx.sender)) {
+            await ctx.reply({ text: '⛔ Sin permisos.' })
+            return
         }
     }
     await next()
 })
 
-// 3. Comando protegido (solo llega si el middleware 2 llamo a next)
-bot.command('!admin kick', async (ctx) => {
-    // Solo admins llegan aqui
-})
+// Solo admins llegan aqui
+bot.command('!admin kick', async (ctx) => { /* ... */ })
 ```
 
-> **Regla de oro:** Si no llamas a `await next()`, la cadena se detiene. Usa esto para filtros de permisos, anti-spam, etc.
+> **Regla de oro:** Si no llamas a `await next()`, la cadena se detiene.
 
 ---
 
 ## 💾 Persistencia SQLite
 
-Baileys-next reemplaza el almacenamiento en memoria por una base de datos SQLite de alta velocidad.
-
 ```mermaid
 graph LR
     subgraph "Baileys Original"
-        MEM["Map() en RAM"]
-        CRASH["💥 Crash a las 2 horas"]
+        MEM["Map() en RAM"] --> CRASH["💥 OOM despues de horas"]
     end
-    
+
     subgraph "Baileys-next"
-        SQL["SQLite en disco"]
-        STABLE["✅ Estable por meses"]
+        SQL["SQLite WAL en disco"] --> STABLE["✅ Estable por meses"]
     end
-    
-    MEM --> CRASH
-    SQL --> STABLE
 ```
 
-### Que se almacena
+### Tablas creadas automaticamente
 
-| Tabla | Proposito |
+| Tabla | Uso |
 |---|---|
-| `msg_retry_count` | Contador de reintentos de mensajes (reemplaza `msgRetryCounterCache`) |
-| `sessions` | Datos de sesion arbitrarios por chat (`SessionManager`) |
-| `group_stats` | Contadores de mensajes, stickers y timestamp de actividad (`StatsManager`) |
+| `kv_store` | Contador de reintentos + sesiones (`msgRetryCounterCache`) |
+| `group_stats` | Contadores de mensajes, stickers, timestamps (indexado por `group_jid`) |
 
-### Ubicacion
-
-Por defecto, la base de datos se crea en `./baileys_store.db` en el directorio de trabajo. El archivo es portable — puedes moverlo entre servidores para conservar todas tus sesiones y estadisticas.
-
----
-
-## 🛡 Rate Limiter y Anti-Ban
-
-WhatsApp detecta automatismos por patrones como: envio instantaneo de muchos mensajes, lectura instantanea sin retardo humano, y sesiones con identidades sospechosas.
-
-Baileys-next incluye dos escudos integrados que el desarrollador solo tiene que activar:
-
-### Rate Limiter (`rateLimitMs`)
+### Configuracion
 
 ```typescript
 const bot = new Bot({
     auth: state,
-    rateLimitMs: 2000 // 2 segundos entre cada mensaje
+    dbPath: './data/mi_bot.db' // Default: 'baileys_store.db'
 })
 ```
 
-**Funcionamiento interno:**
+La DB usa `journal_mode = WAL` (Write-Ahead Logging) para lecturas concurrentes sin bloqueo.
+
+---
+
+## 🛡 Rate Limiter y Anti-Ban
 
 ```mermaid
 sequenceDiagram
     participant DEV as Tu Codigo
     participant RL as Rate Limiter
     participant WA as WhatsApp
-    
+
     DEV->>RL: sendMessage("Hola")
     RL->>WA: Envia "Hola"
     DEV->>RL: sendMessage("Mundo")
-    Note over RL: Espera 2000ms...
+    Note over RL: Espera rateLimitMs...
     RL->>WA: Envia "Mundo"
     DEV->>RL: sendMessage("!")
-    Note over RL: Espera 2000ms...
+    Note over RL: Espera rateLimitMs...
     RL->>WA: Envia "!"
 ```
 
-Sin importar cuantos `sendMessage()` lance tu codigo, la libreria los despacha uno a uno con la pausa configurada. Esto simula el ritmo de un humano escribiendo.
+### Configuracion recomendada
 
-### Auto-Read (`autoReadMs`)
+| Escenario | `rateLimitMs` | `autoReadMs` |
+|---|---|---|
+| Bot personal | `500` | `1000` |
+| Bot de grupo (< 50) | `1500` | `2000` |
+| Bot de servicio (100+) | `2000 - 3000` | `2000 - 3000` |
 
-```typescript
-const bot = new Bot({
-    auth: state,
-    autoReadMs: 3000 // Marca como "leido" 3 segundos despues de recibir
-})
-```
-
-WhatsApp sospecha cuando un bot marca mensajes como leidos en 0 milisegundos. Con `autoReadMs`, la libreria clava el "visto" despues de un retardo natural, simulando a un humano leyendo el celular.
-
-Tambien puedes marcar como leido manualmente desde un handler:
+### Auto-Read manual
 ```typescript
 bot.command('!test', async (ctx) => {
-    await ctx.read(1500) // Marca como leido con 1.5s de retardo
+    await ctx.read(1500) // Clava el visto con 1.5s de retardo
     await ctx.reply({ text: 'Listo!' })
 })
 ```
-
-### Mejores Practicas Anti-Ban
-
-| Practica | Configuracion Recomendada |
-|---|---|
-| Bot personal / uso privado | `rateLimitMs: 500` |
-| Bot de grupo (< 50 grupos) | `rateLimitMs: 1500` |
-| Bot de servicio (100+ grupos) | `rateLimitMs: 2000 - 3000` |
-| Siempre activar auto-read | `autoReadMs: 1000 - 3000` |
 
 ---
 
 ## 👻 Analiticas y Fantasmas
 
-El `StatsManager` registra cada mensaje que pasa por la libreria y almacena los contadores en SQLite. Todo ocurre en segundo plano, sin impacto en el rendimiento.
-
-### Detectar Fantasmas
-
 ```typescript
-bot.command('!fantasmas', async (ctx) => {
-    const ghosts = await bot.stats.getGhosts(ctx.remoteJid, 30) // 30 dias
+// Fantasmas (inactivos 30+ dias)
+const ghosts = await bot.stats.getGhosts(ctx.remoteJid, 30)
 
-    // isTotalGhost = true -> Nunca ha enviado ni un mensaje
-    // isTotalGhost = false -> Antes hablaba, ahora no
-    const totales = ghosts.filter(g => g.isTotalGhost).length
-    const inactivos = ghosts.filter(g => !g.isTotalGhost).length
+// Top 10 activos
+const top = bot.stats.getTopUsers(ctx.remoteJid, 10)
 
-    await ctx.reply({
-        text: `👻 ${totales} fantasmas totales, ${inactivos} inactivos recientes.`
-    })
-})
-```
+// Top stickereros
+const stickers = bot.stats.getTopStickers(ctx.remoteJid, 5)
 
-### Ranking de Actividad
-
-```typescript
-bot.command('!top', async (ctx) => {
-    const top = bot.stats.getTopUsers(ctx.remoteJid, 10)
-    // Retorna: [{ userJid, messageCount, stickerCount, lastActive }]
-})
-
-bot.command('!topstickers', async (ctx) => {
-    const top = bot.stats.getTopStickers(ctx.remoteJid, 10)
-    // Los que mas stickers envian
-})
+// Stats de un usuario especifico
+const user = bot.stats.getUserStats(ctx.remoteJid, '5491100000000@s.whatsapp.net')
 ```
 
 ---
 
 ## 🎨 Multimedia (Stickers y Notas de Voz)
 
-### Crear Stickers
+```typescript
+// Sticker con metadatos
+await ctx.replySticker(imageBuffer, { packname: 'MiBot', author: '@luis' })
+
+// Nota de voz nativa
+await ctx.replyVoiceNote(audioBuffer)
+
+// Tambien acepta rutas de archivo
+await ctx.replySticker('/tmp/imagen.png')
+await ctx.replyVoiceNote('/tmp/audio.mp3')
+```
+
+**Especificaciones tecnicas:**
+- Stickers: WebP, 512x512, con transparencia, metadatos EXIF inyectados
+- Notas de voz: Opus/OGG, mono, 48kHz (formato nativo PTT de WhatsApp)
+- FFmpeg incluido via `ffmpeg-static` (0 instalacion manual)
+
+---
+
+## 📋 Sesiones Persistentes
+
+Flujos multi-paso que sobreviven reinicios:
 
 ```typescript
-// Desde un buffer de imagen
-await ctx.replySticker(imageBuffer, {
-    packname: 'MiBot',
-    author: '@usuario'
+// Flujo de encuesta con estados
+bot.command('!encuesta', async (ctx) => {
+    ctx.session.set({ paso: 1, pregunta: '¿Color favorito?' })
+    await ctx.reply({ text: '¿Cual es tu color favorito?' })
 })
 
-// Desde una ruta de archivo
-await ctx.replySticker('/tmp/imagen.png')
+bot.onText(async (ctx, next) => {
+    const state = ctx.session.get<{ paso: number, pregunta: string }>()
+    if (state?.paso === 1) {
+        ctx.session.update({ paso: 2, respuesta: ctx.text })
+        await ctx.reply({ text: `Guardado: ${ctx.text}. ¿Tu comida favorita?` })
+        return // No propagar
+    }
+    if (state?.paso === 2) {
+        ctx.session.delete() // Limpiar
+        await ctx.reply({ text: `Encuesta completa!` })
+        return
+    }
+    await next()
+})
 ```
-
-La libreria automaticamente:
-1. Redimensiona la imagen a 512x512 px
-2. Convierte a formato WebP
-3. Inyecta metadatos EXIF (packname, author) para que aparezca en el explorador de stickers
-
-### Crear Notas de Voz
-
-```typescript
-// Convierte cualquier audio a formato PTT nativo de WhatsApp
-await ctx.replyVoiceNote(audioBuffer)
-await ctx.replyVoiceNote('/tmp/cancion.mp3')
-```
-
-La libreria convierte automaticamente a Opus/OGG y lo envia como PTT (Push To Talk), que es el formato nativo de las notas de voz de WhatsApp.
 
 ---
 
 ## 🔧 Acceso a Bajo Nivel
 
-Baileys-next **no reemplaza** a Baileys — lo extiende. El socket original esta siempre disponible:
+`bot.socket` expone el socket original de Baileys:
 
 ```typescript
-// Acceso directo al socket de Baileys
-const socket = bot.socket
+await bot.socket?.sendPresenceUpdate('composing', jid)
+await bot.socket?.profilePictureUrl(jid)
+await bot.socket?.groupMetadata(groupJid)
+await bot.socket?.updateProfilePicture(jid, buffer)
 
-// Todas las funciones originales siguen disponibles:
-await socket.sendPresenceUpdate('composing', jid)
-await socket.profilePictureUrl(jid)
-await socket.groupMetadata(groupJid)
-await socket.updateProfilePicture(jid, buffer)
-
-// Eventos originales
-socket.ev.on('group-participants.update', handler)
-socket.ev.on('presence.update', handler)
+bot.socket?.ev.on('group-participants.update', handler)
+bot.socket?.ev.on('presence.update', handler)
 ```
 
 ---
 
 ## ⚠️ Evitar Problemas Comunes
 
-### 1. Error: `better-sqlite3` no compila
-
-**Causa:** Node.js v24+ tiene cambios en el compilador C++ que rompen la compilacion nativa.
-
-**Solucion:**
-```bash
-# Opcion A: Usar Node.js 22 LTS (recomendado)
-nvm install 22
-nvm use 22
-
-# Opcion B: Forzar la instalacion (solo si tienes VS Build Tools)
-npm install --build-from-source
-```
-
-### 2. Error: `ECONNRESET` o desconexiones frecuentes
-
-**Causa:** Red inestable o multiples sesiones activas.
-
-**Solucion:** No hagas nada. Baileys-next tiene Exponential Backoff integrado. Se reconectara automaticamente con delays de 2s, 4s, 8s, 16s... hasta un maximo de 60s.
-
-### 3. Error: `LoggedOut` (codigo 401)
-
-**Causa:** WhatsApp cerro tu sesion (otro dispositivo, ban, etc).
-
-**Solucion:** Elimina la carpeta de autenticacion y vuelve a escanear el QR:
-```bash
-rm -rf auth_session/
-node bot.js
-```
-
-### 4. Los stickers no se ven en iOS
-
-**Causa:** La imagen excede los 100 KB despues de la conversion.
-
-**Solucion:** La libreria ya comprime a 512x512, pero si el video es muy largo, recortalo antes de pasar el buffer.
-
-### 5. Los mensajes se envian fuera de orden
-
-**Causa:** No estas usando el Rate Limiter.
-
-**Solucion:** Activa `rateLimitMs` para garantizar que los mensajes salgan en el orden correcto:
-```typescript
-const bot = new Bot({ auth: state, rateLimitMs: 1000 })
-```
+| Problema | Causa | Solucion |
+|---|---|---|
+| `better-sqlite3` no compila | Node.js v24+ rompe compilacion C++ | Usar Node 22 LTS: `nvm use 22` |
+| `ECONNRESET` frecuente | Red inestable | No hacer nada (Exponential Backoff integrado) |
+| `LoggedOut` (401) | Sesion cerrada por WA | Eliminar carpeta auth y re-escanear QR |
+| Stickers no visibles en iOS | WebP > 100 KB | Recortar video antes de convertir |
+| Mensajes fuera de orden | Sin Rate Limiter | Activar `rateLimitMs` |
+| Bot se responde a si mismo | Version vieja del fork | Actualizar (filtro `fromMe` incluido) |
+| Credenciales no se guardan | `onCreds` despues de `start()` | Usar `bot.onCreds()` antes de `start()` |
 
 ---
 
 ## 🔄 Migracion desde Baileys Original
 
-Si tienes un bot que usa Baileys original (`@whiskeysockets/baileys`), aqui estan los pasos para migrar:
-
-### Paso 1: Cambiar la dependencia
-
+### Paso 1: Cambiar dependencia
 ```bash
-# Eliminar la version original
 npm uninstall @whiskeysockets/baileys
-
-# Instalar el fork
 npm install github:LuferOS/Baileys-next
 ```
 
-### Paso 2: Actualizar los imports
-
+### Paso 2: Actualizar imports
 ```diff
 - import makeWASocket from '@whiskeysockets/baileys'
 + import { Bot, useMultiFileAuthState } from 'baileys-next'
 ```
 
-### Paso 3: Reemplazar el patron de socket crudo
-
+### Paso 3: Reemplazar patron de socket
 ```diff
 - const sock = makeWASocket({ auth: state })
-- sock.ev.on('messages.upsert', ({ messages }) => {
--     for (const msg of messages) {
--         if (msg.message?.conversation === '!ping') {
--             sock.sendMessage(msg.key.remoteJid, { text: 'Pong!' })
--         }
--     }
-- })
-
+- sock.ev.on('messages.upsert', ({ messages }) => { ... })
 + const bot = new Bot({ auth: state })
-+ bot.command('!ping', async (ctx) => {
-+     await ctx.reply({ text: 'Pong!' })
-+ })
++ bot.command('!cmd', async (ctx) => { ... })
 + await bot.start()
 ```
 
-### Paso 4 (opcional): Eliminar `makeInMemoryStore`
-
-Si usabas `makeInMemoryStore`, ya no lo necesitas. `SQLiteStore` lo reemplaza completamente y la libreria lo conecta de forma automatica.
-
+### Paso 4: Eliminar makeInMemoryStore
 ```diff
 - import { makeInMemoryStore } from '@whiskeysockets/baileys'
 - const store = makeInMemoryStore({})
 - store.bind(sock.ev)
-// Ya no es necesario, SQLiteStore se inicializa automaticamente
+// Ya no es necesario. SQLiteStore se inicializa automaticamente.
 ```
 
-> **Compatibilidad hacia atras:** Si tu codigo usa `bot.socket` para llamar funciones originales de Baileys, seguiran funcionando sin cambios. Solo la capa de alto nivel es nueva.
+> **Compatibilidad:** `bot.socket` sigue exponiendo todas las funciones originales de Baileys.
 
 ---
 
 ## 🤝 Contribuir
 
-### Requisitos
-
-1. **Node.js** >= 20
-2. **Corepack** habilitado (`corepack enable`)
-3. Clonar el repositorio:
+### Setup
 ```bash
 git clone https://github.com/LuferOS/Baileys-next.git
 cd Baileys-next
+corepack enable
 yarn install
 ```
 
 ### Estructura del Proyecto
-
 ```
 src/
-├── Framework/           ← Codigo de alto nivel (este fork)
-│   ├── Bot.ts           ← Clase principal, middlewares, rate limiter
-│   ├── Context.ts       ← Wrapper de mensaje con metodos helper
-│   ├── MediaManager.ts  ← Conversion de stickers y notas de voz
+├── Framework/           ← Codigo del fork (alto nivel)
+│   ├── Bot.ts           ← Clase principal, middlewares, rate limiter, reconexion
+│   ├── Context.ts       ← Wrapper de mensaje con helpers (reply, react, sticker...)
+│   ├── MediaManager.ts  ← Conversion de stickers y notas de voz (ffmpeg-static)
 │   ├── SessionManager.ts← Sesiones persistentes por chat
 │   ├── StatsManager.ts  ← Analiticas y deteccion de fantasmas
 │   ├── Store/
-│   │   └── SQLiteStore.ts ← Motor de persistencia SQLite
+│   │   └── SQLiteStore.ts ← Motor de persistencia SQLite (WAL mode)
 │   └── index.ts         ← Re-exports del framework
-├── Socket/              ← Core de Baileys (no modificar sin razon)
-├── Signal/              ← Protocolo Signal (criptografia)
+├── Socket/              ← Core de Baileys (WebSocket, Noise Protocol)
+├── Signal/              ← Protocolo Signal (criptografia E2E)
 ├── Utils/               ← Utilidades del core
 ├── Types/               ← Tipos TypeScript publicos
-├── WABinary/            ← Codificacion binaria
+├── WABinary/            ← Codificacion binaria de stanzas
 └── index.ts             ← Export principal
 ```
 
-### Flujo de Trabajo
-
-```mermaid
-graph LR
-    FORK[Fork en GitHub] --> BRANCH[Crear rama]
-    BRANCH --> CODE[Escribir codigo]
-    CODE --> LINT["yarn lint"]
-    LINT --> TEST["yarn test"]
-    TEST --> BUILD["yarn build"]
-    BUILD --> PR[Pull Request]
+### Validacion
+```bash
+yarn lint      # TypeScript + ESLint (0 errores)
+yarn test      # Tests unitarios
+yarn build     # Compilacion limpia
 ```
 
-1. Haz **Fork** del repositorio
-2. Crea una rama descriptiva: `git checkout -b feat/nueva-funcionalidad`
-3. Escribe tu codigo siguiendo el estilo existente:
-   - Tabs para indentacion
-   - Comillas simples
-   - Sin punto y coma
-   - `import type` para tipos que no se usan en runtime
-4. Ejecuta las validaciones:
-   ```bash
-   yarn lint      # TypeScript + ESLint (0 errores)
-   yarn test      # Tests unitarios
-   yarn build     # Compilacion limpia
-   ```
-5. Haz commit con [Conventional Commits](https://www.conventionalcommits.org/):
-   ```bash
-   git commit -m "feat(framework): add cooldown per user"
-   git commit -m "fix(media): handle webp conversion on linux"
-   ```
-6. Abre un **Pull Request** hacia la rama `master`
-
-### Que SI contribuir
-
-- Nuevas funciones para el Framework (con tests)
-- Mejoras de rendimiento
-- Correccion de bugs
-- Documentacion y ejemplos
-- Traducciones del README
+### Commits
+```bash
+git commit -m "feat(framework): add cooldown per user"
+git commit -m "fix(media): handle webp conversion on linux"
+```
 
 ### Que NO contribuir
-
-- Herramientas de spam o mensajeria masiva no solicitada
-- Scrapers de datos personales sin consentimiento
-- Mecanismos para evadir bans legitimos de WhatsApp
-- Cambios al core de Baileys sin justificacion de protocolo
+- Herramientas de spam o mensajeria masiva
+- Scrapers de datos sin consentimiento
+- Mecanismos para evadir bans legitimos
 
 ---
 
 ## 💖 Creditos y Reconocimientos
 
-Este proyecto es un **Fork** construido sobre los hombros de gigantes. Todo el merito de la ingenieria de red (Noise Protocol, WebSockets y criptografia Signal) pertenece a la comunidad original:
+Este proyecto es un **Fork** construido sobre el trabajo excepcional de la comunidad original:
 
 | Contribuidor | Rol |
 |---|---|
-| **WhiskeySockets / Rajeh** | Creadores y mantenedores actuales del core original |
-| **@pokearaujo** | Observaciones criticas sobre WhatsApp Multi-Device |
-| **@Sigalor** | Ingenieria inversa del protocolo original de WA Web |
-| **@Rhymen** | Primera implementacion en Go que inspiro el proyecto |
+| **WhiskeySockets / Rajeh** | Creadores y mantenedores actuales del core |
+| **@pokearaujo** | Observaciones sobre WhatsApp Multi-Device |
+| **@Sigalor** | Ingenieria inversa del protocolo de WA Web |
+| **@Rhymen** | Primera implementacion en Go |
 
-Si tu empresa depende del nucleo de Baileys y deseas apoyar al mantenedor original, puedes hacerlo en su [Sponsor Page](https://purpshell.dev/sponsor).
+Apoya al mantenedor original: [Sponsor Page](https://purpshell.dev/sponsor)
 
 ---
 
 ## ⚖️ Aviso Legal
 
-*Este proyecto NO esta afiliado, asociado, autorizado, respaldado por, ni conectado de ninguna manera oficial con WhatsApp o cualquiera de sus filiales. "WhatsApp" y las marcas relacionadas son marcas registradas de sus respectivos duenos.*
+*Este proyecto NO esta afiliado, asociado, autorizado, respaldado por, ni conectado de ninguna manera oficial con WhatsApp o cualquiera de sus filiales.*
 
-*Los mantenedores de este Fork no aprueban en modo alguno el uso de esta aplicacion en practicas que violen los Terminos de Servicio de WhatsApp (tales como spam, mensajeria masiva automatizada no deseada o extraccion de datos sin consentimiento). Se apela a la responsabilidad personal de sus usuarios para usar esta libreria de forma etica y legitima.*
+*Los mantenedores no aprueban el uso en practicas que violen los Terminos de Servicio de WhatsApp (spam, mensajeria masiva no deseada, extraccion de datos sin consentimiento).*
 
 ---
 
