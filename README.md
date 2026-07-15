@@ -381,9 +381,9 @@ Para instalarlo, primero debes decirle a npm dónde buscar los paquetes de `@luf
 @luferos:registry=https://npm.pkg.github.com
 ```
 
-Luego, instálalo normalmente:
+o instalalo mediante NPM:
 ```bash
-npm install @luferos/baileys-next
+npm install baileys-next
 ```
 
 ### Requisitos
