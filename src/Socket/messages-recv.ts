@@ -789,7 +789,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				assertSessions,
 				debounceCache: identityAssertDebounce,
 				logger,
-				onBeforeSessionRefresh: reissueTcTokenAfterIdentityChange
+				onBeforeSessionRefresh: reissueTcTokenAfterIdentityChange,
+				onParticipantIdentityChange: jid => {
+					const normalized = jidNormalizedUser(jid)
+					sock.recentlyChangedIdentities.add(normalized)
+					ev.emit('identity-change', { jid: normalized, me: false })
+					setTimeout(
+						() => {
+							sock.recentlyChangedIdentities.delete(normalized)
+						},
+						10 * 60 * 1000
+					).unref()
+				}
 			})
 
 			if (result.action === 'no_identity_node') {
