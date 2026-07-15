@@ -272,6 +272,10 @@ export class Bot {
 			this.socket.ev.removeAllListeners('connection.update')
 			this.socket.ev.removeAllListeners('messages.upsert')
 			this.socket.ev.removeAllListeners('creds.update')
+			this.socket.ev.removeAllListeners('messages.update')
+			this.socket.ev.removeAllListeners('group-participants.update')
+			this.socket.ev.removeAllListeners('presence.update')
+			this.socket.ev.removeAllListeners('message-receipt.update')
 		}
 
 		this.socket = makeWASocket(this.config)
@@ -483,6 +487,10 @@ export class Bot {
 		this.socket?.ev.removeAllListeners('connection.update')
 		this.socket?.ev.removeAllListeners('messages.upsert')
 		this.socket?.ev.removeAllListeners('creds.update')
+		this.socket?.ev.removeAllListeners('messages.update')
+		this.socket?.ev.removeAllListeners('group-participants.update')
+		this.socket?.ev.removeAllListeners('presence.update')
+		this.socket?.ev.removeAllListeners('message-receipt.update')
 		this.socket = undefined
 
 		this.messageQueue = []
@@ -493,6 +501,10 @@ export class Bot {
 		this.credsHandlers = []
 		this.qrHandlers = []
 		this.stateHandlers = []
+		this.pollVoteHandlers = []
+		this.groupParticipantsHandlers = []
+		this.presenceUpdateHandlers = []
+		this.messageReceiptHandlers = []
 		this.middlewares = []
 
 		this.stats?.stop()

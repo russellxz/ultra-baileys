@@ -11,6 +11,8 @@ export class SQLiteStore implements CacheStore {
 	constructor(dbPath = 'baileys_store.db') {
 		this.db = new Database(dbPath)
 		this.db.pragma('journal_mode = WAL')
+		this.db.pragma('synchronous = NORMAL')
+		this.db.pragma('cache_size = -20000')
 
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS kv_store (
