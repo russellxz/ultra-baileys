@@ -31,7 +31,7 @@ export class Bot {
 	public socket: WASocket | undefined
 	private middlewares: MiddlewareFn[] = []
 	private config: BotConfig
-	private logger: ILogger
+	public logger: ILogger
 
 	// Database and Managers
 	public readonly store: SQLiteStore
@@ -272,6 +272,7 @@ export class Bot {
 		this.messageQueue = []
 		this.sendQueue = []
 		this.isProcessingSendQueue = false
+		this.stats?.stop()
 		this.store.close()
 	}
 

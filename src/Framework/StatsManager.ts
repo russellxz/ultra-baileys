@@ -15,6 +15,12 @@ export interface GhostEntry {
 	lastActive?: number
 }
 
+interface PendingStat {
+	messageCount: number
+	stickerCount: number
+	lastActive: number
+}
+
 export class StatsManager {
 	private db: Database.Database
 	private bot: Bot
@@ -22,6 +28,10 @@ export class StatsManager {
 	private insertStmt: Database.Statement
 	private getTopUsersStmt: Database.Statement
 	private getTopStickersStmt: Database.Statement
+
+	// In-memory batching to prevent SQLite I/O bottleneck under heavy load
+	private pendingUpdates = new Map<string, PendingStat>()
+	private flushInterval: NodeJS.Timeout
 
 	constructor(bot: Bot, store: SQLiteStore) {
 		this.bot = bot
@@ -68,24 +78,61 @@ export class StatsManager {
 			ORDER BY sticker_count DESC
 			LIMIT ?
 		`)
+
+		// Flush stats to disk every 5 seconds
+		this.flushInterval = setInterval(() => this.flushStats(), 5000)
 	}
 
-	/** Record an incoming message for analytics */
+	/** Record an incoming message for analytics (Debounced in memory) */
 	public observeMessage(groupJid: string, userJid: string, isSticker: boolean) {
-		const msgCount = 1
-		const stickerCount = isSticker ? 1 : 0
-		const now = Date.now()
+		const key = `${groupJid}|${userJid}`
+		const existing = this.pendingUpdates.get(key) || { messageCount: 0, stickerCount: 0, lastActive: 0 }
 
-		this.insertStmt.run(groupJid, userJid, msgCount, stickerCount, now)
+		existing.messageCount += 1
+		if (isSticker) existing.stickerCount += 1
+		existing.lastActive = Date.now()
+
+		this.pendingUpdates.set(key, existing)
+	}
+
+	/** Write all pending updates to SQLite in a single transaction */
+	public flushStats() {
+		if (this.pendingUpdates.size === 0) return
+
+		const updates = Array.from(this.pendingUpdates.entries())
+		this.pendingUpdates.clear()
+
+		try {
+			const transaction = this.db.transaction((entries: [string, PendingStat][]) => {
+				for (const [key, stat] of entries) {
+					const [groupJid, userJid] = key.split('|')
+					this.insertStmt.run(groupJid, userJid, stat.messageCount, stat.stickerCount, stat.lastActive)
+				}
+			})
+
+			transaction(updates)
+		} catch (error) {
+			this.bot.logger.error({ err: error, count: updates.length }, 'Failed to flush group stats to SQLite')
+			// Optional: restore updates to memory if critical to not lose data
+			// for (const [key, stat] of updates) { ... }
+		}
+	}
+
+	/** Stop the background interval (call this during shutdown) */
+	public stop() {
+		clearInterval(this.flushInterval)
+		this.flushStats()
 	}
 
 	/** Get the most active users in a group, sorted by message count */
 	public getTopUsers(groupJid: string, limit: number = 10): UserStats[] {
+		this.flushStats() // Ensure latest stats are returned
 		return this.getTopUsersStmt.all(groupJid, limit) as UserStats[]
 	}
 
 	/** Get the top sticker senders in a group */
 	public getTopStickers(groupJid: string, limit: number = 10): UserStats[] {
+		this.flushStats() // Ensure latest stats are returned
 		return this.getTopStickersStmt.all(groupJid, limit) as UserStats[]
 	}
 
@@ -98,6 +145,8 @@ export class StatsManager {
 		if (!this.bot.socket) {
 			throw new Error('Socket not connected — cannot fetch group metadata')
 		}
+
+		this.flushStats() // Ensure latest stats are evaluated
 
 		const metadata = await this.bot.socket.groupMetadata(groupJid)
 		const currentParticipants = metadata.participants.map(p => p.id)
@@ -126,6 +175,7 @@ export class StatsManager {
 
 	/** Get the total message count for a specific user in a group */
 	public getUserStats(groupJid: string, userJid: string): UserStats | undefined {
+		this.flushStats()
 		const stmt = this.db.prepare(
 			'SELECT user_jid as userJid, message_count as messageCount, sticker_count as stickerCount, last_active as lastActive FROM group_stats WHERE group_jid = ? AND user_jid = ?'
 		)
