@@ -1,4 +1,4 @@
-import * as fs from 'node:fs'
+import { writeFile, copyFile, readFile, unlink } from 'node:fs/promises'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import * as os from 'node:os'
@@ -29,9 +29,9 @@ export class MediaManager {
 		const tempOutput = this.getTempFile('webp')
 
 		if (Buffer.isBuffer(inputPathOrBuffer)) {
-			fs.writeFileSync(tempInput, inputPathOrBuffer)
+			await writeFile(tempInput, inputPathOrBuffer)
 		} else {
-			fs.copyFileSync(inputPathOrBuffer, tempInput)
+			await copyFile(inputPathOrBuffer, tempInput)
 		}
 
 		try {
@@ -40,7 +40,7 @@ export class MediaManager {
 					.inputOptions(['-y'])
 					.outputOptions([
 						'-vcodec libwebp',
-						'-vf', "scale='min(512,iw)':min'(512,ih)':force_original_aspect_ratio=decrease,fps=15,pad=512:512:-1:-1:color=white@0.0,split[a][b];[a]palettegen=reserve_transparent=on:transparency_color=ffffff[p];[b][p]paletteuse",
+						'-vf', "scale='min(512,iw)':'min(512,ih)':force_original_aspect_ratio=decrease,fps=15,pad=512:512:-1:-1:color=white@0.0,split[a][b];[a]palettegen=reserve_transparent=on:transparency_color=ffffff[p];[b][p]paletteuse",
 						'-lossless 1',
 						'-qscale 100',
 						'-preset default',
@@ -92,11 +92,11 @@ export class MediaManager {
 				}
 			}
 
-			return fs.readFileSync(tempOutput)
+			return await readFile(tempOutput)
 		} finally {
 			// Always clean up temp files
-			try { fs.unlinkSync(tempInput) } catch { /* file may already be gone */ }
-			try { fs.unlinkSync(tempOutput) } catch { /* file may already be gone */ }
+			await unlink(tempInput).catch(() => {})
+			await unlink(tempOutput).catch(() => {})
 		}
 	}
 
@@ -109,9 +109,9 @@ export class MediaManager {
 		const tempOutput = this.getTempFile('ogg')
 
 		if (Buffer.isBuffer(inputPathOrBuffer)) {
-			fs.writeFileSync(tempInput, inputPathOrBuffer)
+			await writeFile(tempInput, inputPathOrBuffer)
 		} else {
-			fs.copyFileSync(inputPathOrBuffer, tempInput)
+			await copyFile(inputPathOrBuffer, tempInput)
 		}
 
 		try {
@@ -127,10 +127,10 @@ export class MediaManager {
 					.on('error', (err: Error) => reject(err))
 			})
 
-			return fs.readFileSync(tempOutput)
+			return await readFile(tempOutput)
 		} finally {
-			try { fs.unlinkSync(tempInput) } catch { /* file may already be gone */ }
-			try { fs.unlinkSync(tempOutput) } catch { /* file may already be gone */ }
+			await unlink(tempInput).catch(() => {})
+			await unlink(tempOutput).catch(() => {})
 		}
 	}
 }

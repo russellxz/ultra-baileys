@@ -17,6 +17,8 @@ export type BotConfig = UserFacingSocketConfig & {
 	rateLimitMs?: number
 	autoReadMs?: number
 	dbPath?: string
+	/** Maximum messages to hold in memory while disconnected (default: 1000) */
+	maxQueueSize?: number
 }
 
 type EnqueuedMessage = {
@@ -158,9 +160,13 @@ export class Bot {
 				} else {
 					this.socket.sendMessage(jid, content, options).then(resolve).catch(reject)
 				}
-			} else {
-				this.messageQueue.push(msg)
-				this.logger.debug?.({ jid, queueLength: this.messageQueue.length }, 'message queued while disconnected')
+		} else {
+				if (this.messageQueue.length < (this.config.maxQueueSize ?? 1000)) {
+					this.messageQueue.push(msg)
+					this.logger.debug?.({ jid, queueLength: this.messageQueue.length }, 'message queued while disconnected')
+				} else {
+					reject(new Error('Message queue full — bot is disconnected and queue limit reached'))
+				}
 			}
 		})
 	}
@@ -212,6 +218,13 @@ export class Bot {
 	}
 
 	public async start() {
+		// Clean up old socket listeners to prevent duplicate registrations on reconnect
+		if (this.socket) {
+			this.socket.ev.removeAllListeners('connection.update')
+			this.socket.ev.removeAllListeners('messages.upsert')
+			this.socket.ev.removeAllListeners('creds.update')
+		}
+
 		this.socket = makeWASocket(this.config)
 
 		this.socket.ev.on('messages.upsert', async ({ messages, type }) => {

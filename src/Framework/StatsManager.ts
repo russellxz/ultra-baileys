@@ -28,6 +28,8 @@ export class StatsManager {
 	private insertStmt: Database.Statement
 	private getTopUsersStmt: Database.Statement
 	private getTopStickersStmt: Database.Statement
+	private getUserStatsStmt: Database.Statement
+	private getGroupStatsStmt: Database.Statement
 
 	// In-memory batching to prevent SQLite I/O bottleneck under heavy load
 	private pendingUpdates = new Map<string, PendingStat>()
@@ -78,6 +80,14 @@ export class StatsManager {
 			ORDER BY sticker_count DESC
 			LIMIT ?
 		`)
+
+		this.getUserStatsStmt = this.db.prepare(
+			'SELECT user_jid as userJid, message_count as messageCount, sticker_count as stickerCount, last_active as lastActive FROM group_stats WHERE group_jid = ? AND user_jid = ?'
+		)
+
+		this.getGroupStatsStmt = this.db.prepare(
+			'SELECT user_jid as userJid, last_active as lastActive FROM group_stats WHERE group_jid = ?'
+		)
 
 		// Flush stats to disk every 5 seconds
 		this.flushInterval = setInterval(() => this.flushStats(), 5000)
@@ -151,9 +161,7 @@ export class StatsManager {
 		const metadata = await this.bot.socket.groupMetadata(groupJid)
 		const currentParticipants = metadata.participants.map(p => p.id)
 
-		const stats = this.db.prepare(
-			'SELECT user_jid as userJid, last_active as lastActive FROM group_stats WHERE group_jid = ?'
-		).all(groupJid) as { userJid: string, lastActive: number }[]
+		const stats = this.getGroupStatsStmt.all(groupJid) as { userJid: string, lastActive: number }[]
 
 		const statsMap = new Map(stats.map(s => [s.userJid, s.lastActive]))
 
@@ -176,9 +184,6 @@ export class StatsManager {
 	/** Get the total message count for a specific user in a group */
 	public getUserStats(groupJid: string, userJid: string): UserStats | undefined {
 		this.flushStats()
-		const stmt = this.db.prepare(
-			'SELECT user_jid as userJid, message_count as messageCount, sticker_count as stickerCount, last_active as lastActive FROM group_stats WHERE group_jid = ? AND user_jid = ?'
-		)
-		return stmt.get(groupJid, userJid) as UserStats | undefined
+		return this.getUserStatsStmt.get(groupJid, userJid) as UserStats | undefined
 	}
 }

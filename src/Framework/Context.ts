@@ -7,12 +7,6 @@ export class Context {
 	public readonly bot: Bot
 	public readonly remoteJid: string
 
-	constructor(bot: Bot, message: WAMessage) {
-		this.bot = bot
-		this.message = message
-		this.remoteJid = message.key.remoteJid || ''
-	}
-
 	/** Extracted text from conversation or extendedTextMessage */
 	public get text(): string | undefined {
 		return this.message.message?.conversation ||
@@ -31,8 +25,47 @@ export class Context {
 	}
 
 	/** Shortcut to session data for this chat */
-	public get session() {
-		return {
+	public readonly session: {
+		get: <T = unknown>() => T | undefined
+		set: <T = unknown>(data: T) => void
+		update: <T = unknown>(data: Partial<T>) => void
+		delete: () => void
+	}
+
+	/** Whether the incoming message contains an image */
+	public get hasImage(): boolean {
+		return !!this.message.message?.imageMessage
+	}
+
+	/** Whether the incoming message contains a video */
+	public get hasVideo(): boolean {
+		return !!this.message.message?.videoMessage
+	}
+
+	/** Whether the incoming message contains a sticker */
+	public get hasSticker(): boolean {
+		return !!this.message.message?.stickerMessage
+	}
+
+	/** Whether the incoming message contains audio */
+	public get hasAudio(): boolean {
+		return !!this.message.message?.audioMessage
+	}
+
+	/** The caption text from image/video messages */
+	public get caption(): string | undefined {
+		return this.message.message?.imageMessage?.caption
+			|| this.message.message?.videoMessage?.caption
+			|| undefined
+	}
+
+	constructor(bot: Bot, message: WAMessage) {
+		this.bot = bot
+		this.message = message
+		this.remoteJid = message.key.remoteJid || ''
+
+		// Cache the session accessor so we don't create a new object per access
+		this.session = {
 			get: <T = unknown>() => this.bot.session.get<T>(this.remoteJid),
 			set: <T = unknown>(data: T) => this.bot.session.set(this.remoteJid, data),
 			update: <T = unknown>(data: Partial<T>) => this.bot.session.update(this.remoteJid, data),
