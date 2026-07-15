@@ -3,7 +3,7 @@ import { processHistoryMessage } from '../../Utils/history'
 
 describe('processHistoryMessage', () => {
 	describe('phoneNumberToLidMappings extraction', () => {
-		it('should extract LID-PN mappings from history sync payload', () => {
+		it('should extract LID-PN mappings from history sync payload', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [],
@@ -13,7 +13,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toEqual([
 				{ lid: '11111111111111@lid', pn: '1234567890123@s.whatsapp.net' },
@@ -21,7 +21,7 @@ describe('processHistoryMessage', () => {
 			])
 		})
 
-		it('should skip mappings with missing lidJid or pnJid', () => {
+		it('should skip mappings with missing lidJid or pnJid', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.RECENT,
 				conversations: [],
@@ -32,23 +32,23 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toEqual([{ lid: '22222222222222@lid', pn: '9876543210987@s.whatsapp.net' }])
 		})
 
-		it('should return empty array when no mappings exist', () => {
+		it('should return empty array when no mappings exist', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: []
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toEqual([])
 		})
 
-		it('should process mappings regardless of sync type', () => {
+		it('should process mappings regardless of sync type', async () => {
 			const syncTypes = [proto.HistorySync.HistorySyncType.PUSH_NAME, proto.HistorySync.HistorySyncType.ON_DEMAND]
 
 			for (const syncType of syncTypes) {
@@ -59,7 +59,7 @@ describe('processHistoryMessage', () => {
 					phoneNumberToLidMappings: [{ lidJid: '11111111111111@lid', pnJid: '1234567890123@s.whatsapp.net' }]
 				}
 
-				const result = processHistoryMessage(historySync)
+				const result = await processHistoryMessage(historySync)
 
 				expect(result.lidPnMappings).toEqual([{ lid: '11111111111111@lid', pn: '1234567890123@s.whatsapp.net' }])
 			}
@@ -67,7 +67,7 @@ describe('processHistoryMessage', () => {
 	})
 
 	describe('conversations processing', () => {
-		it('should extract contacts with LID and PN from conversations', () => {
+		it('should extract contacts with LID and PN from conversations', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -80,7 +80,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.contacts).toHaveLength(1)
 			expect(result.contacts[0]).toEqual({
@@ -93,7 +93,7 @@ describe('processHistoryMessage', () => {
 	})
 
 	describe('LID-PN mapping extraction from conversations', () => {
-		it('should extract mapping when chat.id is LID and pnJid exists', () => {
+		it('should extract mapping when chat.id is LID and pnJid exists', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -104,7 +104,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toContainEqual({
 				lid: '11111111111111@lid',
@@ -112,7 +112,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should extract mapping when chat.id is PN and lidJid exists', () => {
+		it('should extract mapping when chat.id is PN and lidJid exists', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -123,7 +123,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toContainEqual({
 				lid: '11111111111111@lid',
@@ -131,7 +131,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should not extract mapping for group chats', () => {
+		it('should not extract mapping for group chats', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -143,12 +143,12 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toEqual([])
 		})
 
-		it('should combine mappings from phoneNumberToLidMappings and conversations', () => {
+		it('should combine mappings from phoneNumberToLidMappings and conversations', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				phoneNumberToLidMappings: [{ lidJid: '11111111111111@lid', pnJid: '1111111111111@s.whatsapp.net' }],
@@ -160,7 +160,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toHaveLength(2)
 			expect(result.lidPnMappings).toContainEqual({
@@ -173,7 +173,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should extract mapping for hosted LID users', () => {
+		it('should extract mapping for hosted LID users', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -184,7 +184,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toContainEqual({
 				lid: '11111111111111@hosted.lid',
@@ -192,7 +192,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should extract mapping for hosted PN users', () => {
+		it('should extract mapping for hosted PN users', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -203,7 +203,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toContainEqual({
 				lid: '11111111111111@hosted.lid',
@@ -211,7 +211,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should extract mapping from userReceipt when pnJid is missing and chat.id is LID', () => {
+		it('should extract mapping from userReceipt when pnJid is missing and chat.id is LID', async () => {
 			// Based on real-world case: LID chat without pnJid but userReceipt contains PN
 			// See: https://github.com/WhiskeySockets/Baileys/pull/2282#issuecomment-3777941679
 			const historySync: proto.IHistorySync = {
@@ -243,7 +243,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.lidPnMappings).toContainEqual({
 				lid: '211071956705386@lid',
@@ -251,7 +251,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should not extract mapping from userReceipt when pnJid already exists', () => {
+		it('should not extract mapping from userReceipt when pnJid already exists', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -278,7 +278,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			// Should use pnJid, not userReceipt
 			expect(result.lidPnMappings).toContainEqual({
@@ -292,7 +292,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should not extract mapping from userReceipt when fromMe is false', () => {
+		it('should not extract mapping from userReceipt when fromMe is false', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -318,7 +318,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			// Should not extract mapping when fromMe is false
 			expect(result.lidPnMappings).not.toContainEqual({
@@ -327,7 +327,7 @@ describe('processHistoryMessage', () => {
 			})
 		})
 
-		it('should not extract mapping from userReceipt when userJid is also a LID', () => {
+		it('should not extract mapping from userReceipt when userJid is also a LID', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [
@@ -353,7 +353,7 @@ describe('processHistoryMessage', () => {
 				]
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			// Should not create a LID->LID mapping
 			expect(result.lidPnMappings).toHaveLength(0)
@@ -361,7 +361,7 @@ describe('processHistoryMessage', () => {
 	})
 
 	describe('pastParticipants extraction', () => {
-		it('should pass through pastParticipants from history sync payload', () => {
+		it('should pass through pastParticipants from history sync payload', async () => {
 			const pastParticipants = [
 				{
 					groupJid: '123456789012345678@g.us',
@@ -378,35 +378,35 @@ describe('processHistoryMessage', () => {
 				pastParticipants
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.pastParticipants).toEqual(pastParticipants)
 		})
 
-		it('should return undefined pastParticipants when not present in payload', () => {
+		it('should return undefined pastParticipants when not present in payload', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: []
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.pastParticipants).toBeUndefined()
 		})
 
-		it('should pass through empty pastParticipants array', () => {
+		it('should pass through empty pastParticipants array', async () => {
 			const historySync: proto.IHistorySync = {
 				syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
 				conversations: [],
 				pastParticipants: []
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.pastParticipants).toEqual([])
 		})
 
-		it('should pass through pastParticipants with multiple groups', () => {
+		it('should pass through pastParticipants with multiple groups', async () => {
 			const pastParticipants = [
 				{
 					groupJid: '111111111111111111@g.us',
@@ -424,7 +424,7 @@ describe('processHistoryMessage', () => {
 				pastParticipants
 			}
 
-			const result = processHistoryMessage(historySync)
+			const result = await processHistoryMessage(historySync)
 
 			expect(result.pastParticipants).toEqual(pastParticipants)
 		})

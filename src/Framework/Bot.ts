@@ -108,11 +108,18 @@ export class Bot {
 		this.credsHandlers.push(handler)
 	}
 
-	public async sendMessage(jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}): Promise<unknown> {
+	public async sendMessage(
+		jid: string, 
+		content: AnyMessageContent, 
+		options: MiscMessageGenerationOptions & { ignoreRateLimit?: boolean } = {}
+	): Promise<unknown> {
 		return new Promise((resolve, reject) => {
 			const msg: EnqueuedMessage = { jid, content, options, resolve, reject }
 			if (this.isConnected && this.socket) {
-				if (this.config.rateLimitMs && this.config.rateLimitMs > 0) {
+				// Bypass the queue if ignoreRateLimit is explicitly set
+				if (options.ignoreRateLimit) {
+					this.socket.sendMessage(jid, content, options).then(resolve).catch(reject)
+				} else if (this.config.rateLimitMs && this.config.rateLimitMs > 0) {
 					this.sendQueue.push(msg)
 					this.processSendQueue()
 				} else {

@@ -44,7 +44,7 @@ export const downloadHistory = async (msg: proto.Message.IHistorySyncNotificatio
 	return syncData
 }
 
-export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger) => {
+export const processHistoryMessage = async (item: proto.IHistorySync, logger?: ILogger) => {
 	const messages: WAMessage[] = []
 	const contacts: Contact[] = []
 	const chats: Chat[] = []
@@ -91,7 +91,13 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 				const msgs = chat.messages || []
 				delete chat.messages
 
+				let messageCount = 0
 				for (const item of msgs) {
+					// Yield to the event loop every 500 messages to prevent blocking (OOM / freezing)
+					if (++messageCount % 500 === 0) {
+						await new Promise(resolve => setImmediate(resolve))
+					}
+
 					const message = item.message! as WAMessage
 					messages.push(message)
 
