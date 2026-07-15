@@ -196,6 +196,30 @@ export class Context {
 		)
 	}
 
+	/** Send an image to the current chat */
+	public async sendImage(urlOrBuffer: Buffer | { url: string }, caption?: string) {
+		if (!this.remoteJid) throw new Error('remoteJid is undefined')
+		return this.bot.sendMessage(this.remoteJid, { image: urlOrBuffer, caption })
+	}
+
+	/** Send a video to the current chat */
+	public async sendVideo(urlOrBuffer: Buffer | { url: string }, caption?: string, gifPlayback = false) {
+		if (!this.remoteJid) throw new Error('remoteJid is undefined')
+		return this.bot.sendMessage(this.remoteJid, { video: urlOrBuffer, caption, gifPlayback })
+	}
+
+	/** Send an audio message (PTT or standard) */
+	public async sendAudio(urlOrBuffer: Buffer | { url: string }, ptt = false) {
+		if (!this.remoteJid) throw new Error('remoteJid is undefined')
+		return this.bot.sendMessage(this.remoteJid, { audio: urlOrBuffer, ptt })
+	}
+
+	/** Send a document file */
+	public async sendDocument(urlOrBuffer: Buffer | { url: string }, mimetype: string, fileName?: string, caption?: string) {
+		if (!this.remoteJid) throw new Error('remoteJid is undefined')
+		return this.bot.sendMessage(this.remoteJid, { document: urlOrBuffer, mimetype, fileName, caption })
+	}
+
 	/** 
 	 * Downloads the media from the current message (if it contains any).
 	 * Returns a Buffer representing the file.

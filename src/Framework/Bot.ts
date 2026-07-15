@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import makeWASocket from '../Socket'
-import type { AnyMessageContent, MiscMessageGenerationOptions, UserFacingSocketConfig, WAMessage, ParticipantAction, GroupParticipant, WAMessageKey, PresenceData } from '../Types'
+import type { AnyMessageContent, MiscMessageGenerationOptions, UserFacingSocketConfig, WAMessage, ParticipantAction, GroupParticipant, WAMessageKey, PresenceData, MessageUserReceiptUpdate } from '../Types'
 import { DisconnectReason } from '../Types'
 import type { ILogger } from '../Utils/logger'
 import { isJidGroup } from '../WABinary'
@@ -80,6 +80,7 @@ export class Bot {
 	private pollVoteHandlers: Array<(vote: PollVoteContext) => void> = []
 	private groupParticipantsHandlers: Array<(event: GroupParticipantsUpdateEvent) => void> = []
 	private presenceUpdateHandlers: Array<(event: PresenceUpdateEvent) => void> = []
+	private messageReceiptHandlers: Array<(update: MessageUserReceiptUpdate) => void> = []
 
 	constructor(config: BotConfig) {
 		this.store = new SQLiteStore(config.dbPath)
@@ -132,6 +133,10 @@ export class Bot {
 
 	public onPresenceUpdate(handler: (event: PresenceUpdateEvent) => void) {
 		this.presenceUpdateHandlers.push(handler)
+	}
+
+	public onMessageReceiptUpdate(handler: (update: MessageUserReceiptUpdate) => void) {
+		this.messageReceiptHandlers.push(handler)
 	}
 
 	/**
@@ -365,6 +370,18 @@ export class Bot {
 					handler(update)
 				} catch (err) {
 					this.logger.error?.({ err }, 'presence.update handler threw')
+				}
+			}
+		})
+
+		this.socket.ev.on('message-receipt.update', async (updates) => {
+			for (const update of updates) {
+				for (const handler of this.messageReceiptHandlers) {
+					try {
+						handler(update)
+					} catch (err) {
+						this.logger.error?.({ err }, 'message-receipt handler threw')
+					}
 				}
 			}
 		})
