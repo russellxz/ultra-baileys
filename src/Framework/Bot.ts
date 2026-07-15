@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import makeWASocket from '../Socket'
-import type { AnyMessageContent, MiscMessageGenerationOptions, UserFacingSocketConfig, WAMessage } from '../Types'
+import type { AnyMessageContent, MiscMessageGenerationOptions, UserFacingSocketConfig, WAMessage, ParticipantAction, GroupParticipant } from '../Types'
 import { DisconnectReason } from '../Types'
 import type { ILogger } from '../Utils/logger'
 import { isJidGroup } from '../WABinary'
@@ -18,6 +18,12 @@ export interface PollVoteContext {
 	pollId: string
 	pollName: string
 	selectedOptions: string[]
+}
+
+export interface GroupParticipantsUpdateEvent {
+	id: string
+	participants: string[]
+	action: ParticipantAction
 }
 
 export type BotConfig = UserFacingSocketConfig & {
@@ -67,6 +73,7 @@ export class Bot {
 	private qrHandlers: Array<(qr: string) => void> = []
 	private stateHandlers: Array<(state: 'DISCONNECTED' | 'QR_READY' | 'CONNECTED') => void> = []
 	private pollVoteHandlers: Array<(vote: PollVoteContext) => void> = []
+	private groupParticipantsHandlers: Array<(event: GroupParticipantsUpdateEvent) => void> = []
 
 	constructor(config: BotConfig) {
 		this.store = new SQLiteStore(config.dbPath)
@@ -111,6 +118,10 @@ export class Bot {
 
 	public onPollVote(handler: (vote: PollVoteContext) => void) {
 		this.pollVoteHandlers.push(handler)
+	}
+
+	public onGroupParticipantsUpdate(handler: (event: GroupParticipantsUpdateEvent) => void) {
+		this.groupParticipantsHandlers.push(handler)
 	}
 
 	/**
@@ -310,6 +321,20 @@ export class Bot {
 							}
 						}
 					}
+				}
+			}
+		})
+
+		this.socket.ev.on('group-participants.update', async (update) => {
+			for (const handler of this.groupParticipantsHandlers) {
+				try {
+					handler({
+						id: update.id,
+						participants: (update.participants as any[]).map(p => typeof p === 'string' ? p : p.id),
+						action: update.action
+					})
+				} catch (err) {
+					this.logger.error?.({ err }, 'group-participants handler threw')
 				}
 			}
 		})
