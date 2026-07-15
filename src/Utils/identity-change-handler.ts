@@ -33,7 +33,7 @@ export type IdentityChangeContext = {
 	 * regardless of whether the session refresh is skipped or offline.
 	 * Used to invalidate caches (e.g., sender-key-memory).
 	 */
-	onParticipantIdentityChange?: (jid: string) => void | Promise<void>
+	onParticipantIdentityChange?: (jid: string, me: boolean) => void | Promise<void>
 }
 
 export async function handleIdentityChange(
@@ -43,14 +43,6 @@ export async function handleIdentityChange(
 	const from = node.attrs.from
 	if (!from) {
 		return { action: 'invalid_notification' }
-	}
-
-	if (ctx.onParticipantIdentityChange) {
-		try {
-			await ctx.onParticipantIdentityChange(from)
-		} catch (error) {
-			ctx.logger.warn({ error, jid: from }, 'onParticipantIdentityChange callback failed')
-		}
 	}
 
 	const identityNode = getBinaryNodeChild(node, 'identity')
@@ -67,6 +59,15 @@ export async function handleIdentityChange(
 	}
 
 	const isSelfPrimary = ctx.meId && (areJidsSameUser(from, ctx.meId) || (ctx.meLid && areJidsSameUser(from, ctx.meLid)))
+
+	if (ctx.onParticipantIdentityChange) {
+		try {
+			await ctx.onParticipantIdentityChange(from, !!isSelfPrimary)
+		} catch (error) {
+			ctx.logger.warn({ error, jid: from }, 'onParticipantIdentityChange callback failed')
+		}
+	}
+
 	if (isSelfPrimary) {
 		ctx.logger.info({ jid: from }, 'self primary identity changed')
 		return { action: 'skipped_self_primary' }

@@ -1072,7 +1072,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
 
 			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
-			const tcTokenJid = is1on1Send ? await resolveTcTokenJid(destinationJid, getLIDForPN) : destinationJid
+			const tcTokenJid = is1on1Send ? await resolveTcTokenJid(destinationJid, getLIDForPN, logger) : destinationJid
 			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
 			const existingTokenEntry = contactTcTokenData[tcTokenJid]
 			let tcTokenBuffer = existingTokenEntry?.token
