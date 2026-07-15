@@ -365,14 +365,15 @@ graph LR
 
 ## 📦 Instalacion
 
-### Desde NPM (Oficial y recomendado)
-```bash
-npm install baileys-next
+### Desde el Registro de GitHub (Oficial)
+Para instalarlo, primero debes decirle a npm dónde buscar los paquetes de `@luferos`. Crea un archivo `.npmrc` en la raíz de tu proyecto con esta línea:
+```ini
+@luferos:registry=https://npm.pkg.github.com
 ```
 
-### Desde GitHub (Versión de desarrollo)
+Luego, instálalo normalmente:
 ```bash
-npm install github:LuferOS/Baileys-next
+npm install @luferos/baileys-next
 ```
 
 ### Requisitos
