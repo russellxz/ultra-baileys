@@ -417,4 +417,35 @@ describe('buildAckStanza', () => {
 			})
 		})
 	})
+
+	describe('status@broadcast drop (poison-message loop fix)', () => {
+		const statusNode: BinaryNode = {
+			tag: 'message',
+			attrs: {
+				id: '3EB01722E53528BB4C9066',
+				from: 'status@broadcast',
+				participant: 'sender@s.whatsapp.net',
+				type: 'media'
+			}
+		}
+
+		it('drops an undecryptable status with a positive ack (no error), not a NACK', () => {
+			// handleMessage acks status decrypt-failures via sendMessageAck(node) with no
+			// errorCode, so the server stops redelivering instead of resetting the stream on a
+			// NACK. A NACK on a broadcast is what drove the poison-message reconnect loop.
+			const drop = buildAckStanza(statusNode, undefined, 'me@s.whatsapp.net')
+			expect(drop.attrs.error).toBeUndefined()
+			expect(drop.attrs).toMatchObject({
+				id: '3EB01722E53528BB4C9066',
+				to: 'status@broadcast',
+				class: 'message',
+				type: 'media',
+				participant: 'sender@s.whatsapp.net'
+			})
+
+			// contrast: an errorCode would have produced the NACK we now avoid for status
+			const nack = buildAckStanza(statusNode, 500, 'me@s.whatsapp.net')
+			expect(nack.attrs.error).toBe('500')
+		})
+	})
 })

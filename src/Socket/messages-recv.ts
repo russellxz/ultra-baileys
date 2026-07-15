@@ -1663,6 +1663,28 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				// message failed to decrypt
 				if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && msg.category !== 'peer') {
+					// Status broadcasts are fan-out / fire-and-forget. Any decrypt failure on a
+					// status would otherwise NACK (ParsingError below, or UnhandledError in the
+					// retry path); WhatsApp rejects a NACK on a broadcast and resets the stream, so
+					// every reconnect replays the same status from the offline queue and the
+					// connection never stabilizes -- a poison-message loop that also stalls offline
+					// sync. The per-socket retry counter is reset on each reconnect and the stream
+					// dies after this single node, so the cap can never trip to break the loop.
+					// Positively ack (drop) the status instead -- its content is ephemeral and
+					// unrecoverable here anyway.
+					if (isJidStatusBroadcast(msg.key.remoteJid!)) {
+						const messageAge = unixTimestampSeconds() - toNumber(msg.messageTimestamp)
+						const expired = messageAge > STATUS_EXPIRY_SECONDS
+						logger[expired ? 'debug' : 'warn'](
+							{ msgId: msg.key.id, messageAge, remoteJid: msg.key.remoteJid },
+							expired
+								? 'skipping retry for expired status message'
+								: 'status failed to decrypt; acking to drop and break poison-message loop'
+						)
+						acked = true
+						return sendMessageAck(node)
+					}
+
 					if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
 						acked = true
 						return sendMessageAck(node, NACK_REASONS.ParsingError)
@@ -1731,19 +1753,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						await sendMessageAck(node)
 						// Don't return — fall through to upsertMessage so the stub is emitted
 					} else {
-						// Skip retry for expired status messages (>24h old)
-						if (isJidStatusBroadcast(msg.key.remoteJid!)) {
-							const messageAge = unixTimestampSeconds() - toNumber(msg.messageTimestamp)
-							if (messageAge > STATUS_EXPIRY_SECONDS) {
-								logger.debug(
-									{ msgId: msg.key.id, messageAge, remoteJid: msg.key.remoteJid },
-									'skipping retry for expired status message'
-								)
-								acked = true
-								return sendMessageAck(node)
-							}
-						}
-
 						logger.debug('[handleMessage] Attempting retry request for failed decryption')
 
 						// WAWeb only retry-receipts here; server emits PreKeyLow if prekeys run low.
