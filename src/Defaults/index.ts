@@ -52,10 +52,13 @@ export const PROCESSABLE_HISTORY_TYPES = [
 ]
 
 export const DEFAULT_CACHE_TTLS = {
-	SIGNAL_STORE: 5 * 60, // 5 minutes
+	// longer signal-store cache -> fewer auth-store reads on every encrypt/decrypt
+	SIGNAL_STORE: 15 * 60, // 15 minutes
 	MSG_RETRY: 60 * 60, // 1 hour
 	CALL_OFFER: 5 * 60, // 5 minutes
-	USER_DEVICES: 5 * 60 // 5 minutes
+	// device lists are kept fresh by server `devices` notifications, so a longer
+	// TTL is safe and skips a USync round-trip before sending to known chats
+	USER_DEVICES: 30 * 60 // 30 minutes
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
@@ -82,7 +85,9 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	},
 	shouldIgnoreJid: () => false,
 	linkPreviewImageThumbnailWidth: 192,
-	transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
+	// 10 retries x 3s could stall a send for 30s on store contention; 5 x 500ms
+	// resolves the same transient conflicts with a 2.5s worst case
+	transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 500 },
 	generateHighQualityLinkPreview: false,
 	enableAutoSessionRecreation: true,
 	enableRecentMessageCache: true,

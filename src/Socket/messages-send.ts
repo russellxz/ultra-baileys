@@ -1358,7 +1358,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						getUrlInfo(text, {
 							thumbnailWidth: linkPreviewImageThumbnailWidth,
 							fetchOpts: {
-								timeout: 3_000,
+								// preview fetch blocks the send of any text containing a URL —
+								// cap it so slow sites can't add seconds of latency
+								timeout: 1_500,
 								...(httpRequestOptions || {})
 							},
 							logger,
