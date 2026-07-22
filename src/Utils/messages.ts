@@ -621,72 +621,55 @@ export const generateWAMessageContent = async (
 		m = await prepareWAMessageMedia(message, options)
 	}
 
-	// ===== buttons (classic ButtonsMessage, rendered thanks to the <biz> stanza node) =====
+	// ===== buttons (InteractiveMessage + native flow: renders AND responds on tap) =====
 	const btnContent = message as unknown as ButtonsMessageContent & ListMessageContent
 	if (Array.isArray(btnContent.buttons) && btnContent.buttons.length) {
-		const buttonsMessage: proto.Message.IButtonsMessage = {
-			buttons: btnContent.buttons.map(b => {
-				// raw native flow button ({ name, buttonParamsJson }) passes straight through
-				if (b.name && (b.buttonParamsJson || b.paramsJson)) {
-					return {
-						buttonId: b.id || b.buttonId,
-						nativeFlowInfo: {
-							name: b.name,
-							paramsJson: b.buttonParamsJson || b.paramsJson
-						},
-						type: proto.Message.ButtonsMessage.Button.Type.NATIVE_FLOW
-					}
-				}
+		const nativeButtons = btnContent.buttons.map(b => {
+			// raw native flow button ({ name, buttonParamsJson }) passes straight through
+			if (b.name && (b.buttonParamsJson || b.paramsJson)) {
+				return { name: b.name, buttonParamsJson: b.buttonParamsJson || b.paramsJson }
+			}
 
-				// accept both { text, id } and the classic { buttonId, buttonText: { displayText } }
-				const text = b.text || b.buttonText?.displayText || ''
-				const id = b.id || b.buttonId || text
+			// accept both { text, id } and the classic { buttonId, buttonText: { displayText } }
+			const text = b.text || b.buttonText?.displayText || ''
+			const id = b.id || b.buttonId || text
+			return buildNativeFlowButton({ ...b, text, id })
+		})
 
-				// every button is emitted as NATIVE_FLOW — classic RESPONSE buttons
-				// are no longer rendered by current WhatsApp clients
-				const flow = buildNativeFlowButton({ ...b, text, id })
-				return {
-					buttonId: id,
-					nativeFlowInfo: {
-						name: flow.name,
-						paramsJson: flow.buttonParamsJson
-					},
-					type: proto.Message.ButtonsMessage.Button.Type.NATIVE_FLOW
-				}
-			})
+		let header: proto.Message.InteractiveMessage.IHeader = {
+			title: btnContent.title || '',
+			subtitle: '',
+			hasMediaAttachment: false
 		}
 
-		if (btnContent.text) {
-			buttonsMessage.contentText = btnContent.text
-			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.EMPTY
-		} else {
-			buttonsMessage.contentText =
-				btnContent.caption || m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || ''
+		if (m.imageMessage) {
+			header = { ...header, hasMediaAttachment: true, imageMessage: m.imageMessage }
+		} else if (m.videoMessage) {
+			header = { ...header, hasMediaAttachment: true, videoMessage: m.videoMessage }
+		} else if (m.documentMessage) {
+			header = { ...header, hasMediaAttachment: true, documentMessage: m.documentMessage }
+		}
 
-			if (m.imageMessage) {
-				buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.IMAGE
-				buttonsMessage.imageMessage = m.imageMessage
-			} else if (m.videoMessage) {
-				buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.VIDEO
-				buttonsMessage.videoMessage = m.videoMessage
-			} else if (m.documentMessage) {
-				buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.DOCUMENT
-				buttonsMessage.documentMessage = m.documentMessage
-			} else {
-				buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.EMPTY
+		const bodyText =
+			btnContent.text ||
+			btnContent.caption ||
+			m.imageMessage?.caption ||
+			m.videoMessage?.caption ||
+			m.documentMessage?.caption ||
+			m.extendedTextMessage?.text ||
+			''
+
+		m = {
+			interactiveMessage: {
+				body: { text: bodyText },
+				footer: { text: btnContent.footer || '' },
+				header,
+				nativeFlowMessage: {
+					buttons: nativeButtons,
+					messageParamsJson: '{}'
+				}
 			}
 		}
-
-		if (btnContent.title && !m.imageMessage && !m.videoMessage && !m.documentMessage) {
-			buttonsMessage.headerType = proto.Message.ButtonsMessage.HeaderType.TEXT
-			buttonsMessage.text = btnContent.title
-		}
-
-		if (btnContent.footer) {
-			buttonsMessage.footerText = btnContent.footer
-		}
-
-		m = { buttonsMessage }
 	} else if (Array.isArray(btnContent.sections) && btnContent.sections.length) {
 		// ===== list message (private chats @s.whatsapp.net) =====
 		m.listMessage = {
