@@ -1,7 +1,121 @@
 <h1 align='center'><img alt="Baileys logo" src="https://raw.githubusercontent.com/WhiskeySockets/Baileys/refs/heads/master/Media/logo.png" height="75"/></h1>
 
-<div align='center'>Baileys is a WebSockets-based TypeScript library for interacting with the WhatsApp Web API.</div>
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=800&size=28&duration=2600&pause=700&color=F72585&center=true&vCenter=true&width=700&height=55&lines=%E2%9A%A1+RUSSELLXZ+%C2%B7+ULTRA+BAILEYS+%E2%9A%A1" alt="russellxz ultra baileys" />
+</p>
 
+<p align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=18&duration=2400&pause=500&color=00E5FF&center=true&vCenter=true&width=700&height=40&lines=%F0%9F%9A%80+Optimizado+a+fondo+%C2%B7+respuestas+en+ms+bajos;%F0%9F%94%98+Botones+nativos+%C2%B7+listas+%C2%B7+flows+incluidos;%F0%9F%A7%B9+Consola+limpia+%C2%B7+cero+ruido+de+prekeys;%E2%9C%82%EF%B8%8F+Sin+cosas+innecesarias+%C2%B7+puro+rendimiento" alt="features" />
+</p>
+
+<p align="center">
+  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="100%" alt="divider" />
+</p>
+
+<p align="center">
+  <a href="#-botones-nativos-incluidos"><img src="https://img.shields.io/badge/%F0%9F%94%98_BOTONES-NATIVOS-00e5ff?style=for-the-badge&labelColor=0d1117" alt="botones" /></a>
+  <a href="#-qué-trae-este-fork"><img src="https://img.shields.io/badge/%E2%9A%A1_MODO-TURBO-f72585?style=for-the-badge&labelColor=0d1117" alt="turbo" /></a>
+  <a href="#-qué-trae-este-fork"><img src="https://img.shields.io/badge/%F0%9F%A7%B9_CONSOLA-LIMPIA-9d4edd?style=for-the-badge&labelColor=0d1117" alt="consola" /></a>
+</p>
+
+<div align='center'>
+
+**russellxz-ultra-baileys** es un fork de Baileys (la librería WebSockets en TypeScript para la API de WhatsApp Web) **optimizado para volar**: menos latencia, botones que sí se pintan, y una consola sin basura.
+
+</div>
+
+## ⚡ ¿Qué trae este fork?
+
+| | Mejora | Detalle |
+|---|---|---|
+| 🔘 | **Botones nativos** | `buttons` con respuesta rápida, URL, llamar, copiar código y menú desplegable — con el nodo `<biz>` que hace que **sí se rendericen** |
+| 📋 | **Listas** | `sections` para menús de lista en chats privados |
+| 🚀 | **Menos ms por mensaje** | Cache de dispositivos ×6 más duradero (se salta consultas al servidor antes de cada envío) |
+| 🧠 | **Cache de claves Signal ×3** | Menos lecturas de disco en cada cifrado/descifrado |
+| 🪶 | **Logger silencioso** | pino ya no serializa JSON en cada evento — CPU libre y panel limpio |
+| 🧹 | **Cero ruido de prekeys** | Adiós al spam de `Closing session: SessionEntry {...}` de libsignal |
+| 📡 | **Keep-alive 10s** | Detecta caídas de conexión 3× más rápido |
+| ⏱️ | **Sin bloqueos largos** | Reintentos de transacción 30s→2.5s peor caso · link preview con tope de 1.5s |
+| 🪄 | **Arranque ligero** | Sin sincronización de historial completo |
+| ✨ | **Banner con flow** | Sabrás que corres la versión ultra apenas arranque |
+
+## 🔘 Botones nativos incluidos
+
+```js
+await sock.sendMessage(jid, {
+    text: 'Texto del mensaje', // con imagen/video usa "caption" en vez de "text"
+    footer: 'Pie de página',
+    title: 'Título',
+    buttons: [
+        { text: 'Respuesta rápida', id: '#menu' },
+        { text: 'Abrir web', url: 'https://ejemplo.com' },
+        { text: 'Llamar', call: '573001234567' },
+        { text: 'Copiar código', copy: 'CODIGO123' },
+        {
+            text: 'Desplegable',
+            sections: [{
+                title: 'Sección 1',
+                rows: [
+                    { title: 'Opción A', description: 'desc', id: '#a' },
+                    { title: 'Opción B', description: 'desc', id: '#b' }
+                ]
+            }]
+        }
+    ]
+}, { quoted: m })
+```
+
+Con imagen de cabecera:
+
+```js
+await sock.sendMessage(jid, {
+    image: { url: './imagen.jpg' }, // también video o document
+    caption: 'Texto del mensaje',
+    footer: 'Pie de página',
+    buttons: [{ text: 'Respuesta rápida', id: '#menu' }]
+})
+```
+
+Listas en chat privado:
+
+```js
+await sock.sendMessage(jid, {
+    text: 'Elige una opción',
+    title: 'Menú',
+    buttonText: 'Ver opciones',
+    sections: [{
+        title: 'Sección 1',
+        rows: [{ title: 'Opción A', description: 'desc', id: '#a' }]
+    }]
+})
+```
+
+La respuesta del usuario llega así (desenvuelve antes `msg.ephemeralMessage?.message || msg.viewOnceMessage?.message || msg`):
+
+```js
+// botón de respuesta rápida
+msg.buttonsResponseMessage?.selectedButtonId
+
+// desplegable / lista
+msg.listResponseMessage?.singleSelectReply?.selectedRowId
+
+// botones native flow (url/copiar/llamar no responden, son acciones directas)
+msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson // -> JSON.parse(...).id
+```
+
+## 🎛️ Variables de entorno
+
+| Variable | Efecto |
+|---|---|
+| `BAILEYS_LOG_LEVEL=info` | Reactiva los logs internos (por defecto: silencio total) |
+| `ULTRA_BAILEYS_VERBOSE=1` | Muestra también el ruido de libsignal (desactiva el filtro) |
+| `ULTRA_BAILEYS_NO_BANNER=1` | Oculta el banner de arranque |
+
+<p align="center">
+  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="100%" alt="divider" />
+</p>
+
+<h2 align="center">📚 Documentación original de Baileys</h2>
 
 > [!CAUTION]
 > NOTICE OF BREAKING CHANGE.
