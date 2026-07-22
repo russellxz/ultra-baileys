@@ -626,22 +626,32 @@ export const generateWAMessageContent = async (
 	if (Array.isArray(btnContent.buttons) && btnContent.buttons.length) {
 		const buttonsMessage: proto.Message.IButtonsMessage = {
 			buttons: btnContent.buttons.map(b => {
-				if (b.url || b.copy || b.call || b.sections) {
-					const flow = buildNativeFlowButton(b)
+				// raw native flow button ({ name, buttonParamsJson }) passes straight through
+				if (b.name && (b.buttonParamsJson || b.paramsJson)) {
 					return {
-						buttonId: b.id || b.text,
+						buttonId: b.id || b.buttonId,
 						nativeFlowInfo: {
-							name: flow.name,
-							paramsJson: flow.buttonParamsJson
+							name: b.name,
+							paramsJson: b.buttonParamsJson || b.paramsJson
 						},
 						type: proto.Message.ButtonsMessage.Button.Type.NATIVE_FLOW
 					}
 				}
 
+				// accept both { text, id } and the classic { buttonId, buttonText: { displayText } }
+				const text = b.text || b.buttonText?.displayText || ''
+				const id = b.id || b.buttonId || text
+
+				// every button is emitted as NATIVE_FLOW — classic RESPONSE buttons
+				// are no longer rendered by current WhatsApp clients
+				const flow = buildNativeFlowButton({ ...b, text, id })
 				return {
-					buttonId: b.id || b.text,
-					buttonText: { displayText: b.text },
-					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+					buttonId: id,
+					nativeFlowInfo: {
+						name: flow.name,
+						paramsJson: flow.buttonParamsJson
+					},
+					type: proto.Message.ButtonsMessage.Button.Type.NATIVE_FLOW
 				}
 			})
 		}

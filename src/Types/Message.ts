@@ -220,7 +220,7 @@ export type ButtonReplyInfo = {
 /** a single button for an interactive (native flow) message */
 export type ButtonSpec = {
 	/** display text of the button */
-	text: string
+	text?: string
 	/** id returned when the user taps the button (quick reply) */
 	id?: string
 	/** turns the button into a "open link" button */
@@ -233,6 +233,14 @@ export type ButtonSpec = {
 	useWebview?: boolean
 	/** turns the button into a single-select dropdown with these sections */
 	sections?: any[]
+	/** classic Baileys compatibility: { buttonId, buttonText: { displayText }, type } */
+	buttonId?: string
+	buttonText?: { displayText?: string | null } | null
+	type?: number
+	/** raw native flow button: { name, buttonParamsJson } passes straight through */
+	name?: string
+	buttonParamsJson?: string
+	paramsJson?: string
 }
 
 /** interactive message with native-flow buttons, optionally with a media header */
