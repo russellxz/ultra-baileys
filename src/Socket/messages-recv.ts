@@ -53,7 +53,7 @@ import {
 	xmppPreKey,
 	xmppSignedPreKey
 } from '../Utils'
-import { makeMutex } from '../Utils/make-mutex'
+import { makeLockManager } from '../Utils/lock-manager'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import {
@@ -140,8 +140,55 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 
-	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
-	const retryMutex = makeMutex()
+	/**
+	 * Per-(alt-jid) keyed lock for the pre-mutex LID-mapping & migration block
+	 * (H8). Two parallel inbound messages from the same alt-jid participant
+	 * previously both observed a null mapping, both called
+	 * `storeLIDPNMappings`, and both called `migrateSession`. The mutex below
+	 * serializes the "look up → store → migrate" sequence per participant so
+	 * exactly one migration fires per (genuinely-missing) mapping.
+	 */
+	const lidMigrationLocks = makeLockManager()
+
+	/**
+	 * Per-(msgId,participant) keyed lock for `msgRetryCache` read-modify-write
+	 * (H9). The cache is mutated by two call paths — `sendRetryRequest`
+	 * (formerly nested under `retryMutex` → `messageMutex`) and
+	 * `updateSendMessageAgainCount` (under `receiptMutex`). Without a shared
+	 * lock chain, the classic `await get → +1 → await set` sequence loses
+	 * increments. The lock below makes the increment atomic across paths.
+	 */
+	const retryLocks = makeLockManager()
+	const retryLockRef = (msgId: string, participant: string) => ({
+		namespace: 'msg-retry',
+		id: `${msgId}:${participant}`
+	})
+	const incrementRetryAndGet = async (msgId: string, participant: string): Promise<number> => {
+		return retryLocks.withLock(retryLockRef(msgId, participant), async () => {
+			const key = `${msgId}:${participant}`
+			const next = ((await msgRetryCache.get<number>(key)) ?? 0) + 1
+			await msgRetryCache.set(key, next)
+			return next
+		})
+	}
+
+	/** Extracted from the inbound dispatch (Stage 6) to keep the call-site nesting flat. */
+	const attemptRetryRequest = async (node: BinaryNode): Promise<void> => {
+		try {
+			if (!ws.isOpen) {
+				logger.debug({ node }, 'Connection closed, skipping retry')
+				return
+			}
+
+			const encNode = getBinaryNodeChild(node, 'enc')
+			await sendRetryRequest(node, !encNode)
+			if (retryRequestDelayMs) {
+				await delay(retryRequestDelayMs)
+			}
+		} catch (err) {
+			logger.error({ err }, 'Failed to send retry')
+		}
+	}
 
 	const msgRetryCache =
 		config.msgRetryCounterCache ||
@@ -158,6 +205,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	// Debounce identity-change session refreshes per JID to avoid bursts
 	const identityAssertDebounce = new NodeCache<boolean>({ stdTTL: 5, useClones: false })
+	/** In-flight identity refreshes — see handleIdentityChange M11 guard. */
+	const inFlightIdentityRefreshes = new Set<string>()
 
 	let sendActiveReceipts = false
 
@@ -577,31 +626,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgId = msgKey.id!
 
 		if (messageRetryManager) {
-			// Check if we've exceeded max retries using the new system
-			if (messageRetryManager.hasExceededMaxRetries(msgId)) {
-				logger.debug({ msgId }, 'reached retry limit with new retry manager, clearing')
+			// M12 fold: atomic check-and-increment. `tryIncrement` reads the
+			// counter and increments it in a single sync block, so a parallel
+			// invocation for the same msgId cannot both pass the limit check.
+			const attempt = messageRetryManager.tryIncrement(msgId)
+			if (!attempt.proceed) {
+				logger.debug({ msgId, count: attempt.count }, 'reached retry limit with new retry manager, clearing')
 				messageRetryManager.markRetryFailed(msgId)
 				return
 			}
 
-			// Increment retry count using new system
-			const retryCount = messageRetryManager.incrementRetryCount(msgId)
-
-			// Use the new retry count for the rest of the logic
-			const key = `${msgId}:${msgKey?.participant}`
-			await msgRetryCache.set(key, retryCount)
+			// Mirror the retry count to the durable cache via the shared lock.
+			await retryLocks.withLock(retryLockRef(msgId, String(msgKey?.participant)), async () => {
+				const key = `${msgId}:${msgKey?.participant}`
+				await msgRetryCache.set(key, attempt.count)
+			})
 		} else {
-			// Fallback to old system
-			const key = `${msgId}:${msgKey?.participant}`
-			let retryCount = (await msgRetryCache.get<number>(key)) || 0
-			if (retryCount >= maxMsgRetryCount) {
-				logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
-				await msgRetryCache.del(key)
+			// Fallback to old system — atomic increment via the shared lock so
+			// `sendRetryRequest` and `updateSendMessageAgainCount` (which both
+			// touch `msgRetryCache`) cannot lose increments to each other.
+			const next = await incrementRetryAndGet(msgId, String(msgKey?.participant))
+			if (next > maxMsgRetryCount) {
+				logger.debug({ retryCount: next, msgId }, 'reached retry limit, clearing')
+				await msgRetryCache.del(`${msgId}:${msgKey?.participant}`)
 				return
 			}
-
-			retryCount += 1
-			await msgRetryCache.set(key, retryCount)
 		}
 
 		const key = `${msgId}:${msgKey?.participant}`
@@ -788,6 +837,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				validateSession: signalRepository.validateSession,
 				assertSessions,
 				debounceCache: identityAssertDebounce,
+				inFlightRefreshes: inFlightIdentityRefreshes,
 				logger,
 				onBeforeSessionRefresh: reissueTcTokenAfterIdentityChange
 			})
@@ -1306,9 +1356,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const updateSendMessageAgainCount = async (id: string, participant: string) => {
-		const key = `${id}:${participant}`
-		const newValue = ((await msgRetryCache.get<number>(key)) || 0) + 1
-		await msgRetryCache.set(key, newValue)
+		// H9: route through the shared retryLocks so this increment cannot
+		// race against the `sendRetryRequest` path's update to the same key.
+		await incrementRetryAndGet(id, participant)
 	}
 
 	const sendMessagesAgain = async (
@@ -1604,17 +1654,34 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// store new mappings we didn't have before
 			if (!!alt) {
-				const altServer = jidDecode(alt)?.server
-				const primaryJid = msg.key.participant || msg.key.remoteJid!
-				if (altServer === 'lid') {
-					if (!(await signalRepository.lidMapping.getPNForLID(alt))) {
-						await signalRepository.lidMapping.storeLIDPNMappings([{ lid: alt, pn: primaryJid }])
-						await signalRepository.migrateSession(primaryJid, alt)
+				// H8 fix: serialize the look-up → store → migrate sequence per
+				// alt-jid. Concurrent inbound messages from the same participant
+				// would otherwise each observe a null mapping and each fire the
+				// migration.
+				await lidMigrationLocks.withLock({ namespace: 'lid-migration', id: alt }, async () => {
+					const altServer = jidDecode(alt)?.server
+					const primaryJid = msg.key.participant || msg.key.remoteJid!
+					// Skip the store + migrate ONLY when the existing mapping
+					// already matches the incoming `primaryJid`. A bare
+					// existence check would freeze a stale mapping forever:
+					// if a PN previously mapped to one LID and a new message
+					// arrives announcing a different LID, we must reconcile
+					// rather than silently ignore the update. Equality with
+					// the incoming side is the correct idempotency guard.
+					if (altServer === 'lid') {
+						const existingPn = await signalRepository.lidMapping.getPNForLID(alt)
+						if (existingPn !== primaryJid) {
+							await signalRepository.lidMapping.storeLIDPNMappings([{ lid: alt, pn: primaryJid }])
+							await signalRepository.migrateSession(primaryJid, alt)
+						}
+					} else {
+						const existingLid = await signalRepository.lidMapping.getLIDForPN(alt)
+						if (existingLid !== primaryJid) {
+							await signalRepository.lidMapping.storeLIDPNMappings([{ lid: primaryJid, pn: alt }])
+							await signalRepository.migrateSession(alt, primaryJid)
+						}
 					}
-				} else {
-					await signalRepository.lidMapping.storeLIDPNMappings([{ lid: primaryJid, pn: alt }])
-					await signalRepository.migrateSession(alt, primaryJid)
-				}
+				})
 			}
 
 			await messageMutex.mutex(async () => {
@@ -1710,25 +1777,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						logger.debug('[handleMessage] Attempting retry request for failed decryption')
 
 						// WAWeb only retry-receipts here; server emits PreKeyLow if prekeys run low.
-						await retryMutex.mutex(async () => {
-							try {
-								if (!ws.isOpen) {
-									logger.debug({ node }, 'Connection closed, skipping retry')
-									return
-								}
+						// Stage 6: dropped the formerly-wrapping `retryMutex`. It was nested
+						// inside the outer `messageMutex.mutex(...)` (line ~1659) which already
+						// serializes the inbound pipeline, so an extra mutex over the same
+						// critical section gave no additional ordering guarantee.
+						await attemptRetryRequest(node)
 
-								const encNode = getBinaryNodeChild(node, 'enc')
-								await sendRetryRequest(node, !encNode)
-								if (retryRequestDelayMs) {
-									await delay(retryRequestDelayMs)
-								}
-							} catch (err) {
-								logger.error({ err }, 'Failed to send retry')
-							}
-
-							acked = true
-							await sendMessageAck(node, NACK_REASONS.UnhandledError)
-						})
+						acked = true
+						await sendMessageAck(node, NACK_REASONS.UnhandledError)
 					}
 				} else {
 					if (messageRetryManager && msg.key.id) {
