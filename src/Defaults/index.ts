@@ -63,18 +63,38 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	browser: Browsers.macOS('Chrome'),
 	waWebSocketUrl: 'wss://web.whatsapp.com/ws/chat',
 	connectTimeoutMs: 20_000,
-	keepAliveIntervalMs: 30_000,
+	// a tighter keep-alive keeps the socket warm and detects drops sooner -> lower latency
+	keepAliveIntervalMs: 10_000,
 	logger: logger.child({ class: 'baileys' }),
 	emitOwnEvents: true,
 	defaultQueryTimeoutMs: 60_000,
 	customUploadHosts: [],
-	retryRequestDelayMs: 250,
+	retryRequestDelayMs: 150,
 	maxMsgRetryCount: 5,
 	fireInitQueries: true,
 	auth: undefined as unknown as AuthenticationState,
 	markOnlineOnConnect: true,
-	syncFullHistory: true,
-	patchMessageBeforeSending: msg => msg,
+	// skipping the full history sync makes connecting much faster and lighter
+	syncFullHistory: false,
+	patchMessageBeforeSending: msg => {
+		// interactive/list/button/template messages only render on the recipient's
+		// device when wrapped in a viewOnceMessage with device-list metadata
+		if (msg.interactiveMessage || msg.listMessage || msg.buttonsMessage || msg.templateMessage) {
+			msg = {
+				viewOnceMessage: {
+					message: {
+						messageContextInfo: {
+							deviceListMetadata: {},
+							deviceListMetadataVersion: 2
+						},
+						...msg
+					}
+				}
+			}
+		}
+
+		return msg
+	},
 	shouldSyncHistoryMessage: ({ syncType }: proto.Message.IHistorySyncNotification) => {
 		return syncType !== proto.HistorySync.HistorySyncType.FULL
 	},

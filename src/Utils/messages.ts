@@ -14,7 +14,9 @@ import {
 import type {
 	AnyMediaMessageContent,
 	AnyMessageContent,
+	ButtonsMessageContent,
 	DownloadableMessage,
+	ListMessageContent,
 	MessageContentGenerationOptions,
 	MessageGenerationOptions,
 	MessageGenerationOptionsFromContent,
@@ -28,6 +30,7 @@ import type {
 } from '../Types'
 import { WAMessageStatus, WAProto } from '../Types'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary'
+import { buildNativeFlowButton } from './button-builder'
 import { sha256 } from './crypto'
 import { generateMessageIDV2, getKeyAuthor, unixTimestampSeconds } from './generics'
 import type { ILogger } from './logger'
@@ -607,8 +610,79 @@ export const generateWAMessageContent = async (
 				initiatedByMe: true
 			}
 		}
+	} else if (hasNonNullishProperty(message, 'buttons')) {
+		const media = message as unknown as Record<string, unknown>
+		if (media.image || media.video || media.document) {
+			m = await prepareWAMessageMedia(message as unknown as AnyMediaMessageContent, options)
+		}
+	} else if (hasNonNullishProperty(message, 'sections')) {
+		// content is assembled in the interactive/list block below
 	} else {
 		m = await prepareWAMessageMedia(message, options)
+	}
+
+	// ===== interactive buttons / native flow =====
+	const btnContent = message as unknown as ButtonsMessageContent & ListMessageContent
+	if (Array.isArray(btnContent.buttons) && btnContent.buttons.length) {
+		let header: proto.Message.InteractiveMessage.IHeader = {
+			title: btnContent.title || '',
+			subtitle: '',
+			hasMediaAttachment: false
+		}
+
+		if (m.imageMessage) {
+			header = { ...header, hasMediaAttachment: true, imageMessage: m.imageMessage }
+		} else if (m.videoMessage) {
+			header = { ...header, hasMediaAttachment: true, videoMessage: m.videoMessage }
+		} else if (m.documentMessage) {
+			header = { ...header, hasMediaAttachment: true, documentMessage: m.documentMessage }
+		}
+
+		const bodyText =
+			btnContent.text ||
+			btnContent.caption ||
+			m.imageMessage?.caption ||
+			m.videoMessage?.caption ||
+			m.documentMessage?.caption ||
+			m.extendedTextMessage?.text ||
+			''
+
+		const interactiveMessage: proto.Message.IInteractiveMessage = {
+			body: { text: bodyText },
+			footer: { text: btnContent.footer || '' },
+			header,
+			nativeFlowMessage: {
+				buttons: btnContent.buttons.map(buildNativeFlowButton),
+				messageParamsJson: ''
+			}
+		}
+
+		delete m.imageMessage
+		delete m.videoMessage
+		delete m.documentMessage
+		delete m.extendedTextMessage
+		delete m.conversation
+
+		m.interactiveMessage = interactiveMessage
+	} else if (Array.isArray(btnContent.sections) && btnContent.sections.length) {
+		// ===== list message (private chats @s.whatsapp.net) =====
+		m.listMessage = {
+			title: btnContent.title || '',
+			description: btnContent.text || m.extendedTextMessage?.text || '',
+			footerText: btnContent.footer || '',
+			buttonText: btnContent.buttonText || 'Seleccionar',
+			listType: proto.Message.ListMessage.ListType.SINGLE_SELECT,
+			sections: btnContent.sections.map(section => ({
+				...section,
+				rows: (section.rows || []).map((row: { rowId?: string; id?: string }) => ({
+					...row,
+					rowId: row.rowId || row.id
+				}))
+			}))
+		}
+
+		delete m.extendedTextMessage
+		delete m.conversation
 	}
 
 	if (hasOptionalProperty(message, 'viewOnce') && !!message.viewOnce) {

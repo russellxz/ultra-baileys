@@ -217,6 +217,49 @@ export type ButtonReplyInfo = {
 	index: number
 }
 
+/** a single button for an interactive (native flow) message */
+export type ButtonSpec = {
+	/** display text of the button */
+	text: string
+	/** id returned when the user taps the button (quick reply) */
+	id?: string
+	/** turns the button into a "open link" button */
+	url?: string
+	/** turns the button into a "copy code" button */
+	copy?: string
+	/** turns the button into a "call" button, e.g. '573001234567' */
+	call?: string
+	/** open the url inside WhatsApp's in-app webview */
+	useWebview?: boolean
+	/** turns the button into a single-select dropdown with these sections */
+	sections?: any[]
+}
+
+/** interactive message with native-flow buttons, optionally with a media header */
+export type ButtonsMessageContent = {
+	buttons: ButtonSpec[]
+	text?: string
+	caption?: string
+	footer?: string
+	title?: string
+	image?: WAMediaUpload
+	video?: WAMediaUpload
+	document?: WAMediaUpload
+	mimetype?: string
+	fileName?: string
+} & Mentionable &
+	Contextable
+
+/** classic list message (works in private chats) */
+export type ListMessageContent = {
+	sections: any[]
+	text?: string
+	title?: string
+	footer?: string
+	buttonText?: string
+} & Mentionable &
+	Contextable
+
 export type GroupInviteInfo = {
 	inviteCode: string
 	inviteExpiration: number
@@ -283,6 +326,8 @@ export type AnyRegularMessageContent = (
 	  }
 	| SharePhoneNumber
 	| RequestPhoneNumber
+	| ButtonsMessageContent
+	| ListMessageContent
 ) &
 	ViewOnce
 
