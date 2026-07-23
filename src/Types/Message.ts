@@ -245,7 +245,9 @@ export type ButtonSpec = {
 
 /** interactive message with native-flow buttons, optionally with a media header */
 export type ButtonsMessageContent = {
-	buttons: ButtonSpec[]
+	/** `buttons` and `nativeFlow` are interchangeable aliases for the button array */
+	buttons?: ButtonSpec[]
+	nativeFlow?: ButtonSpec[]
 	text?: string
 	caption?: string
 	footer?: string
