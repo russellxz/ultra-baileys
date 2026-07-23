@@ -15,6 +15,7 @@ import type {
 	AnyMediaMessageContent,
 	AnyMessageContent,
 	ButtonsMessageContent,
+	ButtonSpec,
 	DownloadableMessage,
 	ListMessageContent,
 	MessageContentGenerationOptions,
@@ -610,7 +611,7 @@ export const generateWAMessageContent = async (
 				initiatedByMe: true
 			}
 		}
-	} else if (hasNonNullishProperty(message, 'buttons')) {
+	} else if (hasNonNullishProperty(message, 'buttons') || hasNonNullishProperty(message, 'nativeFlow')) {
 		const media = message as unknown as Record<string, unknown>
 		if (media.image || media.video || media.document) {
 			m = await prepareWAMessageMedia(message as unknown as AnyMediaMessageContent, options)
@@ -618,13 +619,15 @@ export const generateWAMessageContent = async (
 	} else if (hasNonNullishProperty(message, 'sections')) {
 		// content is assembled in the interactive/list block below
 	} else {
-		m = await prepareWAMessageMedia(message, options)
+		m = await prepareWAMessageMedia(message as AnyMediaMessageContent, options)
 	}
 
 	// ===== buttons (InteractiveMessage + native flow: renders AND responds on tap) =====
-	const btnContent = message as unknown as ButtonsMessageContent & ListMessageContent
-	if (Array.isArray(btnContent.buttons) && btnContent.buttons.length) {
-		const nativeButtons = btnContent.buttons.map(b => {
+	// `buttons` and `nativeFlow` are accepted as aliases for the same button array
+	const btnContent = message as unknown as ButtonsMessageContent & ListMessageContent & { nativeFlow?: ButtonSpec[] }
+	const btnArray = Array.isArray(btnContent.buttons) ? btnContent.buttons : btnContent.nativeFlow
+	if (Array.isArray(btnArray) && btnArray.length) {
+		const nativeButtons = btnArray.map(b => {
 			// raw native flow button ({ name, buttonParamsJson }) passes straight through
 			if (b.name && (b.buttonParamsJson || b.paramsJson)) {
 				return { name: b.name, buttonParamsJson: b.buttonParamsJson || b.paramsJson }
