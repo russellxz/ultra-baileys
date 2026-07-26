@@ -669,7 +669,32 @@ export const generateWAMessageContent = async (
 		// taps reply with buttonsResponseMessage, which every client renders as text.
 		const format = btnContent.buttonsFormat || process.env.ULTRA_BAILEYS_BUTTONS_FORMAT || 'interactive'
 
-		if (format === 'buttons') {
+		// a lone dropdown becomes a classic ListMessage: its taps reply with
+		// listResponseMessage, which every client renders as normal text
+		const soleDropdown = btnArray.length === 1 && btnArray[0]!.sections ? btnArray[0]! : undefined
+
+		if (format === 'buttons' && soleDropdown) {
+			m.listMessage = {
+				title: btnContent.title || '',
+				description: bodyText,
+				footerText: btnContent.footer || '',
+				buttonText: soleDropdown.text || soleDropdown.buttonText?.displayText || 'Seleccionar',
+				listType: proto.Message.ListMessage.ListType.SINGLE_SELECT,
+				sections: (soleDropdown.sections || []).map(section => ({
+					...section,
+					rows: (section.rows || []).map((row: { rowId?: string; id?: string }) => ({
+						...row,
+						rowId: row.rowId || row.id
+					}))
+				}))
+			}
+
+			delete m.imageMessage
+			delete m.videoMessage
+			delete m.documentMessage
+			delete m.extendedTextMessage
+			delete m.conversation
+		} else if (format === 'buttons') {
 			const buttonsMessage: proto.Message.IButtonsMessage = {
 				buttons: btnArray.map((b, i) => {
 					const text = b.text || b.buttonText?.displayText || ''
